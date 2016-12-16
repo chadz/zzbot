@@ -1,0 +1,2 @@
+# zzbot
+halite.io bot
