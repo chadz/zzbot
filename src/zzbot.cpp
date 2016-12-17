@@ -11,12 +11,12 @@ zzbot::zzbot(zzbot_config cfg) : config_(cfg) {
     getInit(id_, map_);
     sendInit(config_.name);
 
-    // log_.open("log." + std::to_string(id_) + ".txt", std::fstream::in |
-    // std::fstream::out | std::fstream::app);
+    // log_.open("log." + std::to_string(id_) + ".txt", std::fstream::in | std::fstream::out | std::fstream::app);
     // log_ << "id: " << (int)id_ << std::endl;
 }
 
-zzbot::~zzbot() { /*log_.close();*/
+zzbot::~zzbot() {
+    // log_.close();
 }
 
 void zzbot::calc_state() {
@@ -39,14 +39,13 @@ void zzbot::calc_state() {
         state_[loc.y][loc.x].score = score_region(loc);
     });
 
-    // rank spots such that first priority is given to attacking what is most
-    // valuable
+    // rank spots such that first priority is given to attacking what is most valuable
     std::sort(neutral_.begin(), neutral_.end(), [this](const hlt::Location& a, const hlt::Location& b) {
-        return state_[a.y][a.x].score < state_[b.y][b.x].score;
+        return state_[a.y][a.x].score > state_[b.y][b.x].score;
     });
 
     std::sort(enemies_.begin(), enemies_.end(), [this](const hlt::Location& a, const hlt::Location& b) {
-        return state_[a.y][a.x].score < state_[b.y][b.x].score;
+        return state_[a.y][a.x].score > state_[b.y][b.x].score;
     });
 }
 
