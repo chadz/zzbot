@@ -11,6 +11,18 @@ zzbot::zzbot(zzbot_config cfg) : config_(cfg) {
     getInit(id_, map_);
     sendInit(config_.name);
 
+    if (map_.width * map_.height >= 20 * 20) {
+        config_.production_move_scalar = 5;
+        config_.score_region_radius = 10;
+        config_.wander_clobber_ceiling = 350;
+        config_.max_wait_for_attack = 2;
+    } else {
+        config_.production_move_scalar = 5;
+        config_.score_region_radius = 2;
+        config_.wander_clobber_ceiling = 350;
+        config_.max_wait_for_attack = 1;
+    }
+
     log_.open("log." + std::to_string(id_) + ".txt", std::fstream::in | std::fstream::out | std::fstream::app);
     LOGZ << "id: " << (int)id_ << std::endl;
 }
@@ -28,24 +40,30 @@ void zzbot::calc_state() {
     state_ = std::vector<std::vector<site_state>>(map_.height, std::vector<site_state>(map_.width));
 
     range_all([&](const hlt::Location loc, const hlt::Site& site) {
+
+        auto& state = get_state(loc);
+
         if (site.owner == 0) {
+            state.potential = site.strength;
             neutral_.emplace_back(loc);
         } else if (site.owner != id_) {
+            state.potential = -1 * site.strength;
             enemies_.emplace_back(loc);
         } else {
+            state.potential = site.strength;
             mine_.emplace(loc);
         }
 
-        state_[loc.y][loc.x].score = score_region(loc);
+        state.score = score_region(loc);
     });
 
     // rank spots such that first priority is given to attacking what is most valuable
     std::sort(neutral_.begin(), neutral_.end(), [this](const hlt::Location& a, const hlt::Location& b) {
-        return state_[a.y][a.x].score > state_[b.y][b.x].score;
+        return get_state(a).score > get_state(b).score;
     });
 
     std::sort(enemies_.begin(), enemies_.end(), [this](const hlt::Location& a, const hlt::Location& b) {
-        return state_[a.y][a.x].score > state_[b.y][b.x].score;
+        return get_state(a).score > get_state(b).score;
     });
 }
 
@@ -56,12 +74,9 @@ void zzbot::behavior() {
     do_attack(enemies_);
     do_attack(neutral_);
 
+    // wander with whatever wasn't assigned a move
     for (const auto& mine : mine_) {
-        auto move = do_wander(mine, map_.getSite(mine));
-
-        if (move) {
-            orders_[mine] = move.value();
-        }
+        do_wander(mine);
     }
 }
 
@@ -136,133 +151,100 @@ bool zzbot::assigned_move(const hlt::Location& loc) const {
 void zzbot::do_attack(std::vector<hlt::Location>& targets) {
 
     for (const auto& target : targets) {
-
         do_try_attack(target);
         do_try_reinforce(target);
     }
 }
 
 void zzbot::do_try_reinforce(hlt::Location target) {
+
     const auto& target_site = map_.getSite(target);
+    if (target_site.owner != 0) {
+        return;
+    }
 
     auto attackers = get_neighbors(target, [this](hlt::Location location) {
-        return !(map_.getSite(location).owner == id_ && !assigned_move(location));
+        const auto& site = map_.getSite(location);
+        return !(site.owner == id_ && !assigned_move(location) && !should_idle(site));
     });
 
-    auto total_power = std::accumulate(attackers.cbegin(), attackers.cend(), 0u,
-                                       [this](unsigned int total, std::pair<direction_t, hlt::Location> neighbor) {
-                                           return total + map_.getSite(neighbor.second).strength;
-                                       });
-
-    // sort by strength asc (maybe make this a param)
     std::sort(attackers.begin(), attackers.end(),
               [this](const std::pair<direction_t, hlt::Location>& a, const std::pair<direction_t, hlt::Location>& b) {
                   return map_.getSite(a.second).strength < map_.getSite(b.second).strength;
               });
 
-    // cant directly attack now, try to borrow reinforcements
-    if (target_site.owner == 0) {
+    for (const auto& attacker : attackers) {
 
-        for (const auto& attacker : attackers) {
+        auto attacker_loc = map_.getLocation(target, attacker.first);
+        const auto& attacker_site = map_.getSite(attacker_loc);
 
-            auto attacker_loc = map_.getLocation(target, attacker.first);
-            const auto& attacker_site = map_.getSite(attacker_loc);
+        auto supporters = get_neighbors(target, [this](hlt::Location location) {
+            const auto& site = map_.getSite(location);
+            return !(site.owner == id_ && !assigned_move(location) && !should_idle(site));
+        });
 
-            if (should_idle(attacker_site)) {
-                continue;
-            }
+        if (supporters.empty()) {
+            continue;
+        }
 
-            auto supporters = get_neighbors(target, [this](hlt::Location location) {
-                const auto& site = map_.getSite(location);
-                return !(site.owner == id_ && !assigned_move(location) && !should_idle(site));
-            });
+        LOGZ << "reinforce to beat (" << target.x << "," << target.y << ") score " << get_state(target).score
+             << " from  (" << attacker_loc.x << "," << attacker_loc.y << ")" << std::endl;
 
-            if (supporters.empty()) {
-                continue;
-            }
+        unsigned int total_power = attacker_site.strength + attacker_site.production;
+        unsigned int future_power = attacker_site.strength + attacker_site.production * config_.max_wait_for_attack;
 
-            LOGZ << "trying reinforce to beat (" << target.x << "," << target.y << ") score "
-                 << state_[target.y][target.x].score << " from  (" << attacker_loc.x << "," << attacker_loc.y << ")"
+        for (const auto& supporter : supporters) {
+            const auto& site = map_.getSite(supporter.second);
+            total_power += site.strength;
+            future_power += site.strength + site.production * config_.max_wait_for_attack;
+        }
+
+        if (total_power > target_site.strength) {
+
+            LOGZ << "can reinforce to beat (" << target.x << "," << target.y << ") score " << get_state(target).score
                  << std::endl;
 
-            unsigned int total_power = attacker_site.strength + attacker_site.production;
-            unsigned int future_power = attacker_site.strength;
-            attacker_site.production* config_.max_wait_for_attack;
+            // send supporters to the attacker
+            for (const auto& supporter : supporters) {
+
+                auto supporter_loc = map_.getLocation(attacker_loc, supporter.first);
+                const auto& supporter_site = map_.getSite(supporter_loc);
+                const auto& attacker_state = get_state(attacker_loc);
+
+                LOGZ << "moving (" << supporter_loc.x << "," << supporter_loc.y << ")"
+                     << "to (" << attacker_loc.x << "," << attacker_loc.y << ")" << std::endl;
+
+                assign_move(supporter_loc, {supporter_loc, reverse_direction(supporter.first)});
+
+                LOGZ << "awaiting support at (" << attacker_loc.x << "," << attacker_loc.y << ")" << std::endl;
+            }
+            assign_move(attacker_loc, {attacker_loc, STILL});
+
+        } else if (future_power > target_site.strength) {
 
             for (const auto& supporter : supporters) {
-                const auto& site = map_.getSite(supporter.second);
-                total_power += site.strength;
-                future_power += site.strength + site.production * config_.max_wait_for_attack;
+
+                auto supporter_loc = map_.getLocation(attacker_loc, supporter.first);
+
+                LOGZ << "waiting to support (" << supporter_loc.x << "," << supporter_loc.y << ")"
+                     << "to (" << attacker_loc.x << "," << attacker_loc.y << ")" << std::endl;
+
+                assign_move(supporter_loc, {supporter_loc, STILL});
             }
 
-            if (total_power > target_site.strength) {
-
-                LOGZ << "can reinforce to beat (" << target.x << "," << target.y << ") score "
-                     << state_[target.y][target.x].score << std::endl;
-
-                for (const auto& supporter : supporters) {
-
-                    auto supporter_loc = map_.getLocation(attacker_loc, supporter.first);
-                    const auto& supporter_site = map_.getSite(supporter_loc);
-                    auto& attacker_state = state_[attacker_loc.y][attacker_loc.x];
-
-                    // send supporters to the attacker
-                    if (supporter_site.strength + attacker_state.potential < config_.wander_clobber_ceiling) {
-                        if (mine_.find(supporter_loc) != mine_.end()) {
-
-                            LOGZ << "moving (" << supporter_loc.x << "," << supporter_loc.y << ")"
-                                 << "to (" << attacker_loc.x << "," << attacker_loc.y << ")" << std::endl;
-
-                            mine_.erase(supporter_loc);
-                            orders_[supporter_loc] = {supporter_loc, reverse_direction(supporter.first)};
-                            attacker_state.potential += supporter_site.strength;
-                        }
-                    }
-                }
-
-                // make sure our attacker awaits the supporters if going against neutral
-                if (target_site.owner == 0 && !assigned_move(attacker_loc)) {
-
-                    LOGZ << "awaiting support at (" << attacker_loc.x << "," << attacker_loc.y << ")" << std::endl;
-                    mine_.erase(attacker_loc);
-                    orders_[attacker_loc] = {attacker_loc, STILL};
-                }
-
-            } else if (future_power > target_site.strength) {
-
-                for (const auto& supporter : supporters) {
-
-                    auto supporter_loc = map_.getLocation(attacker_loc, supporter.first);
-                    const auto& supporter_site = map_.getSite(supporter_loc);
-                    auto& supporter_state = state_[supporter_loc.y][supporter_loc.x];
-
-                    if (!assigned_move(supporter_loc)) {
-
-                        LOGZ << "waiting to support (" << supporter_loc.x << "," << supporter_loc.y << ")"
-                             << "to (" << attacker_loc.x << "," << attacker_loc.y << ")" << std::endl;
-
-                        mine_.erase(supporter_loc);
-                        orders_[supporter_loc] = {supporter_loc, STILL};
-                        supporter_state.potential += supporter_site.strength;
-                    }
-                }
-
-                if (target_site.owner == 0 && !assigned_move(attacker_loc)) {
-
-                    LOGZ << "awaiting wait support at (" << attacker_loc.x << "," << attacker_loc.y << ")" << std::endl;
-                    mine_.erase(attacker_loc);
-                    orders_[attacker_loc] = {attacker_loc, STILL};
-                }
-            }
+            LOGZ << "awaiting wait support at (" << attacker_loc.x << "," << attacker_loc.y << ")" << std::endl;
+            assign_move(attacker_loc, {attacker_loc, STILL});
         }
     }
 }
 
 void zzbot::do_try_attack(hlt::Location target) {
+
     const auto& target_site = map_.getSite(target);
 
     auto attackers = get_neighbors(target, [this](hlt::Location location) {
-        return !(map_.getSite(location).owner == id_ && !assigned_move(location));
+        const auto& site = map_.getSite(location);
+        return !(site.owner == id_ && !assigned_move(location));
     });
 
     auto total_power = std::accumulate(attackers.cbegin(), attackers.cend(), 0u,
@@ -287,25 +269,18 @@ void zzbot::do_try_attack(hlt::Location target) {
 
             provided_power += attacker_site.strength;
 
-            // don't overcommit an attack if it will forfeit strength. this needs to suck less
-            if (provided_power > target_site.strength && (provided_power - target_site.strength) > 255) {
-                continue;
-            }
+            const auto& target_state = get_state(target);
 
-            if (!assigned_move(attacker_loc)) {
+            LOGZ << "attacking from (" << attacker_loc.x << "," << attacker_loc.y << "," << (int)attacker_site.strength
+                 << ")"
+                 << "to (" << target.x << "," << target.y << "," << (int)target_site.strength
+                 << ") combined power: " << total_power << std::endl;
 
-                LOGZ << "attacking from (" << attacker_loc.x << "," << attacker_loc.y << ","
-                     << (int)attacker_site.strength << ")"
-                     << "to (" << target.x << "," << target.y << "," << (int)target_site.strength
-                     << ") combined power: " << total_power << std::endl;
+            assign_move(attacker_loc, {attacker_loc, reverse_direction(attacker.first)});
 
-                mine_.erase(attacker_loc);
-                orders_[attacker_loc] = {attacker_loc, reverse_direction(attacker.first)};
-
-                // abort once we commited a single guy to a zero str node
-                if (target_site.strength == 0) {
-                    break;
-                }
+            // abort once we commited a single guy to a zero str node
+            if (target_site.strength == 0) {
+                break;
             }
         }
     }
@@ -316,63 +291,61 @@ bool zzbot::should_idle(const hlt::Site& site) {
     return (site.strength < site.production * config_.production_move_scalar);
 }
 
-optional<hlt::Move> zzbot::do_wander(const hlt::Location loc, const hlt::Site& site) {
+void zzbot::do_wander(const hlt::Location loc) {
 
-    if (!should_idle(site)) {
-
-        auto borders = distance_to_borders(loc);
-
-        // both planes are taken; just move randomly SW
-        if (std::none_of(
-                borders.cbegin(), borders.cend(),
-                [](const optional<std::pair<hlt::Location, distance_t>>& border) { return border.has_value(); })) {
-
-            direction_t random_dir = 3 + rand() & 1;
-            return optional<hlt::Move>({loc, random_dir});
-        }
-
-        // move in most valuable direction
-        float best_score = std::numeric_limits<float>::lowest();
-        direction_t best_dir = STILL;
-
-        for (direction_t dir : CARDINALS) {
-            // this happens when we control the entire row or column
-            if (!borders[dir].has_value()) {
-                continue;
-            }
-
-            const auto& border_loc = borders[dir].value().first;
-            auto border_distance = borders[dir].value().second;
-            auto border_score = state_[border_loc.y][border_loc.x].score;
-            auto score = border_score / (float)(border_distance * border_distance);
-
-            // LOGZ << "attempting to wander score: " << border_score << " distance: "
-            // << (float)(border_distance * 2)
-            //     << " direction: " << (int)dir << std::endl;
-
-            if (score > best_score) {
-                best_dir = dir;
-                best_score = score;
-            }
-        }
-        LOGZ << "wandering score: " << best_score << " dir: " << (int)best_dir << std::endl;
-
-        auto proposed_loc = map_.getLocation(loc, best_dir);
-        const auto& proposed_site = map_.getSite(proposed_loc);
-        auto& proposed_state = state_[proposed_loc.y][proposed_loc.x];
-        if (proposed_site.owner == id_ && site.strength + proposed_state.potential <= config_.wander_clobber_ceiling) {
-
-            LOGZ << "wandering from (" << loc.x << "," << loc.y << ")"
-                 << "to (" << proposed_loc.x << "," << proposed_loc.y << ")" << std::endl;
-
-            proposed_state.potential += site.strength;
-            return optional<hlt::Move>({loc, best_dir});
-        }
+    const auto& site = map_.getSite(loc);
+    if (should_idle(site)) {
+        return;
     }
 
-    /// if the dir wasnt coupled with the index i can try the next best moves
-    /// instead of idling
-    return optional<hlt::Move>();
+    auto borders = distance_to_borders(loc);
+
+    // both planes are taken; just move randomly SW
+    if (std::none_of(borders.cbegin(), borders.cend(),
+                     [](const optional<std::pair<hlt::Location, distance_t>>& border) { return border.has_value(); })) {
+
+        direction_t random_dir = 3 + (rand() & 1);
+        const auto& future_state = get_state(map_.getLocation(loc, random_dir));
+        assign_move(loc, {loc, random_dir}, false);
+    }
+
+    // move in most valuable direction
+    float best_score = std::numeric_limits<float>::lowest();
+    direction_t best_dir = STILL;
+
+    for (direction_t dir : CARDINALS) {
+        // this happens when we control the entire row or column
+        if (!borders[dir].has_value()) {
+            continue;
+        }
+
+        const auto& border_loc = borders[dir].value().first;
+        auto border_distance = borders[dir].value().second;
+        const auto& border_score = get_state(border_loc).score;
+        auto score = border_score / (float)(border_distance * border_distance);
+
+        // LOGZ << "attempting to wander score: " << border_score << " distance: "
+        // << (float)(border_distance * 2)
+        //     << " direction: " << (int)dir << std::endl;
+
+        if (score > best_score) {
+            best_dir = dir;
+            best_score = score;
+        }
+    }
+    LOGZ << "wandering score: " << best_score << " dir: " << (int)best_dir << std::endl;
+
+    auto proposed_loc = map_.getLocation(loc, best_dir);
+    const auto& proposed_site = map_.getSite(proposed_loc);
+    const auto& proposed_state = get_state(proposed_loc);
+
+    if (proposed_site.owner == id_) {
+
+        LOGZ << "wandering from (" << loc.x << "," << loc.y << ")"
+             << "to (" << proposed_loc.x << "," << proposed_loc.y << ")" << std::endl;
+
+        assign_move(loc, {loc, best_dir}, false);
+    }
 }
 
 // xxx:this is made me realize my lambdas are becoming boilerplate.
@@ -388,7 +361,8 @@ float zzbot::score_region(const hlt::Location& loc) {
         if (site.owner != id_) {
 
             float local_score = (float)site.production / (std::max)(1.0f, (float)site.strength);
-            local_score /= 1 + map_.getDistance(l, loc);
+            float distance = map_.getDistance(l, loc);
+            local_score /= 1 + distance * distance;
 
             // lets be militaristic
             if (site.owner != 0) {
@@ -397,7 +371,6 @@ float zzbot::score_region(const hlt::Location& loc) {
 
             score += local_score;
         }
-
     });
 
     return score;
