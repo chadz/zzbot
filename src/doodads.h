@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 template <class T>
 class optional {
 
@@ -16,9 +18,10 @@ class optional {
     bool has_value() const { return obj_.second; }
 };
 
-template <class T, class F>
-T &filter(T &obj, F fn) {
-    obj.erase(std::remove_if(std::begin(obj), std::end(obj), fn), std::end(obj));
+template <class T, class P>
+T &filter(T &obj, P fn) {
+    //still cant figure out how to negate the predicate here... no combination of bind/fun_ptr/negate/etc. works
+    obj.erase(std::remove_if(std::begin(obj), std::end(obj), fn) , std::end(obj));
     return obj;
 }
 

@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
             configs[i].name = "zzbot_" + names[i];
             configs[i].production_move_scalar = productions[i];
             // configs[i].score_enemy_scalar = battle_factors[i];
-            // configs[i].score_region_radius = radii[i];
+            configs[i].score_region_radius = radii[i];
         }
 
         int bot_idx = atoi(argv[1]);

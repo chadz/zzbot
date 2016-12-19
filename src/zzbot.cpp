@@ -11,12 +11,12 @@ zzbot::zzbot(zzbot_config cfg) : config_(cfg) {
     getInit(id_, map_);
     sendInit(config_.name);
 
-    // log_.open("log." + std::to_string(id_) + ".txt", std::fstream::in | std::fstream::out | std::fstream::app);
-    // log_ << "id: " << (int)id_ << std::endl;
+    log_.open("log." + std::to_string(id_) + ".txt", std::fstream::in | std::fstream::out | std::fstream::app);
+    LOGZ << "id: " << (int)id_ << std::endl;
 }
 
 zzbot::~zzbot() {
-    // log_.close();
+    LOGZ.close();
 }
 
 void zzbot::calc_state() {
@@ -69,14 +69,13 @@ void zzbot::run() {
 
     std::set<hlt::Move> moves;
     for (int frame = 0;; ++frame) {
-        // log_ << "frame: " << frame << std::endl;
+        LOGZ << "frame: " << frame << std::endl;
         moves.clear();
         orders_.clear();
 
         getFrame(map_);
 
         behavior();
-        // behavior_old();
 
         for (const auto& move : orders_) {
             moves.emplace(move.second);
@@ -85,7 +84,7 @@ void zzbot::run() {
         sendFrame(moves);
     }
 }
-// xxx: refactor this shared code, not sure if i want ot make
+
 // find_nearest_border a subset of this
 std::array<optional<std::pair<hlt::Location, distance_t>>, 5> zzbot::distance_to_borders(const hlt::Location loc) {
 
@@ -130,58 +129,189 @@ direction_t zzbot::find_nearest_border(const hlt::Location loc) {
     return direction;
 }
 
+bool zzbot::assigned_move(const hlt::Location& loc) const {
+    return mine_.find(loc) == mine_.end();
+}
+
 void zzbot::do_attack(std::vector<hlt::Location>& targets) {
 
     for (const auto& target : targets) {
 
-        auto attackers = get_neighbors(target);
+        do_try_attack(target);
+        do_try_reinforce(target);
+    }
+}
 
-        filter(attackers, [&](std::pair<direction_t, hlt::Site> neighbor) {
-            const auto& nsite = neighbor.second;
-            return nsite.owner != id_;
-        });
+void zzbot::do_try_reinforce(hlt::Location target) {
+    const auto& target_site = map_.getSite(target);
 
-        if (attackers.empty()) {
-            continue;
-        }
+    auto attackers = get_neighbors(target, [this](hlt::Location location) {
+        return !(map_.getSite(location).owner == id_ && !assigned_move(location));
+    });
 
-        auto total_power = std::accumulate(attackers.cbegin(), attackers.cend(), 0u,
-                                           [](unsigned int total, std::pair<direction_t, hlt::Site> attacker) {
-                                               return total + attacker.second.strength;
-                                           });
+    auto total_power = std::accumulate(attackers.cbegin(), attackers.cend(), 0u,
+                                       [this](unsigned int total, std::pair<direction_t, hlt::Location> neighbor) {
+                                           return total + map_.getSite(neighbor.second).strength;
+                                       });
 
-        auto target_site = map_.getSite(target);
+    // sort by strength asc (maybe make this a param)
+    std::sort(attackers.begin(), attackers.end(),
+              [this](const std::pair<direction_t, hlt::Location>& a, const std::pair<direction_t, hlt::Location>& b) {
+                  return map_.getSite(a.second).strength < map_.getSite(b.second).strength;
+              });
 
-        // dont attack when equal against neutral
-        if (target_site.owner == 0 && total_power == target_site.strength) {
-            continue;
-        }
+    // cant directly attack now, try to borrow reinforcements
+    if (target_site.owner == 0) {
 
-        if (total_power >= target_site.strength) {
+        for (const auto& attacker : attackers) {
 
-            unsigned int provided_power = 0;
-            for (const auto& mine : attackers) {
-                // this is dodgy as fuck
-                auto direction = reverse_direction(mine.first);
-                auto loc = map_.getLocation(target, mine.first);
-                const auto& attacker = map_.getSite(loc);
-                provided_power += attacker.strength;
+            auto attacker_loc = map_.getLocation(target, attacker.first);
+            const auto& attacker_site = map_.getSite(attacker_loc);
 
-                // don't overcommit an attack if it will forfeit strength. this needs to
-                // suck less
-                if (provided_power > target_site.strength && (provided_power - target_site.strength) > 255) {
-                    continue;
+            if (should_idle(attacker_site)) {
+                continue;
+            }
+
+            auto supporters = get_neighbors(target, [this](hlt::Location location) {
+                const auto& site = map_.getSite(location);
+                return !(site.owner == id_ && !assigned_move(location) && !should_idle(site));
+            });
+
+            if (supporters.empty()) {
+                continue;
+            }
+
+            LOGZ << "trying reinforce to beat (" << target.x << "," << target.y << ") score "
+                 << state_[target.y][target.x].score << " from  (" << attacker_loc.x << "," << attacker_loc.y << ")"
+                 << std::endl;
+
+            unsigned int total_power = attacker_site.strength + attacker_site.production;
+            unsigned int future_power = attacker_site.strength;
+            attacker_site.production* config_.max_wait_for_attack;
+
+            for (const auto& supporter : supporters) {
+                const auto& site = map_.getSite(supporter.second);
+                total_power += site.strength;
+                future_power += site.strength + site.production * config_.max_wait_for_attack;
+            }
+
+            if (total_power > target_site.strength) {
+
+                LOGZ << "can reinforce to beat (" << target.x << "," << target.y << ") score "
+                     << state_[target.y][target.x].score << std::endl;
+
+                for (const auto& supporter : supporters) {
+
+                    auto supporter_loc = map_.getLocation(attacker_loc, supporter.first);
+                    const auto& supporter_site = map_.getSite(supporter_loc);
+                    auto& attacker_state = state_[attacker_loc.y][attacker_loc.x];
+
+                    // send supporters to the attacker
+                    if (supporter_site.strength + attacker_state.potential < config_.wander_clobber_ceiling) {
+                        if (mine_.find(supporter_loc) != mine_.end()) {
+
+                            LOGZ << "moving (" << supporter_loc.x << "," << supporter_loc.y << ")"
+                                 << "to (" << attacker_loc.x << "," << attacker_loc.y << ")" << std::endl;
+
+                            mine_.erase(supporter_loc);
+                            orders_[supporter_loc] = {supporter_loc, reverse_direction(supporter.first)};
+                            attacker_state.potential += supporter_site.strength;
+                        }
+                    }
                 }
 
-                if (mine_.find(loc) != mine_.end()) {
-                    mine_.erase(loc);
-                    orders_[loc] = {loc, direction};
+                // make sure our attacker awaits the supporters if going against neutral
+                if (target_site.owner == 0 && !assigned_move(attacker_loc)) {
+
+                    LOGZ << "awaiting support at (" << attacker_loc.x << "," << attacker_loc.y << ")" << std::endl;
+                    mine_.erase(attacker_loc);
+                    orders_[attacker_loc] = {attacker_loc, STILL};
+                }
+
+            } else if (future_power > target_site.strength) {
+
+                for (const auto& supporter : supporters) {
+
+                    auto supporter_loc = map_.getLocation(attacker_loc, supporter.first);
+                    const auto& supporter_site = map_.getSite(supporter_loc);
+                    auto& supporter_state = state_[supporter_loc.y][supporter_loc.x];
+
+                    if (!assigned_move(supporter_loc)) {
+
+                        LOGZ << "waiting to support (" << supporter_loc.x << "," << supporter_loc.y << ")"
+                             << "to (" << attacker_loc.x << "," << attacker_loc.y << ")" << std::endl;
+
+                        mine_.erase(supporter_loc);
+                        orders_[supporter_loc] = {supporter_loc, STILL};
+                        supporter_state.potential += supporter_site.strength;
+                    }
+                }
+
+                if (target_site.owner == 0 && !assigned_move(attacker_loc)) {
+
+                    LOGZ << "awaiting wait support at (" << attacker_loc.x << "," << attacker_loc.y << ")" << std::endl;
+                    mine_.erase(attacker_loc);
+                    orders_[attacker_loc] = {attacker_loc, STILL};
                 }
             }
         }
     }
 }
 
+void zzbot::do_try_attack(hlt::Location target) {
+    const auto& target_site = map_.getSite(target);
+
+    auto attackers = get_neighbors(target, [this](hlt::Location location) {
+        return !(map_.getSite(location).owner == id_ && !assigned_move(location));
+    });
+
+    auto total_power = std::accumulate(attackers.cbegin(), attackers.cend(), 0u,
+                                       [this](unsigned int total, std::pair<direction_t, hlt::Location> neighbor) {
+                                           return total + map_.getSite(neighbor.second).strength;
+                                       });
+
+    // sort by strength asc (maybe make this a param)
+    std::sort(attackers.begin(), attackers.end(),
+              [this](const std::pair<direction_t, hlt::Location>& a, const std::pair<direction_t, hlt::Location>& b) {
+                  return map_.getSite(a.second).strength < map_.getSite(b.second).strength;
+              });
+
+    if ((target_site.owner != 0 && total_power >= target_site.strength) ||
+        (target_site.owner == 0 && total_power > target_site.strength)) {
+
+        unsigned int provided_power = 0;
+        for (const auto& attacker : attackers) {
+
+            auto attacker_loc = attacker.second;
+            const auto& attacker_site = map_.getSite(attacker_loc);
+
+            provided_power += attacker_site.strength;
+
+            // don't overcommit an attack if it will forfeit strength. this needs to suck less
+            if (provided_power > target_site.strength && (provided_power - target_site.strength) > 255) {
+                continue;
+            }
+
+            if (!assigned_move(attacker_loc)) {
+
+                LOGZ << "attacking from (" << attacker_loc.x << "," << attacker_loc.y << ","
+                     << (int)attacker_site.strength << ")"
+                     << "to (" << target.x << "," << target.y << "," << (int)target_site.strength
+                     << ") combined power: " << total_power << std::endl;
+
+                mine_.erase(attacker_loc);
+                orders_[attacker_loc] = {attacker_loc, reverse_direction(attacker.first)};
+
+                // abort once we commited a single guy to a zero str node
+                if (target_site.strength == 0) {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// xxx: i think this might be better dynamic based on map size
 bool zzbot::should_idle(const hlt::Site& site) {
     return (site.strength < site.production * config_.production_move_scalar);
 }
@@ -216,7 +346,7 @@ optional<hlt::Move> zzbot::do_wander(const hlt::Location loc, const hlt::Site& s
             auto border_score = state_[border_loc.y][border_loc.x].score;
             auto score = border_score / (float)(border_distance * border_distance);
 
-            // log_ << "attempting to wander score: " << border_score << " distance: "
+            // LOGZ << "attempting to wander score: " << border_score << " distance: "
             // << (float)(border_distance * 2)
             //     << " direction: " << (int)dir << std::endl;
 
@@ -225,13 +355,15 @@ optional<hlt::Move> zzbot::do_wander(const hlt::Location loc, const hlt::Site& s
                 best_score = score;
             }
         }
-        // log_ << "wandering score: " << best_score << " dir: " << (int)best_dir <<
-        // std::endl;
+        LOGZ << "wandering score: " << best_score << " dir: " << (int)best_dir << std::endl;
 
         auto proposed_loc = map_.getLocation(loc, best_dir);
         const auto& proposed_site = map_.getSite(proposed_loc);
-        auto& proposed_state = state_[loc.y][loc.x];
+        auto& proposed_state = state_[proposed_loc.y][proposed_loc.x];
         if (proposed_site.owner == id_ && site.strength + proposed_state.potential <= config_.wander_clobber_ceiling) {
+
+            LOGZ << "wandering from (" << loc.x << "," << loc.y << ")"
+                 << "to (" << proposed_loc.x << "," << proposed_loc.y << ")" << std::endl;
 
             proposed_state.potential += site.strength;
             return optional<hlt::Move>({loc, best_dir});
@@ -251,13 +383,12 @@ float zzbot::score_region(const hlt::Location& loc) {
 
     float score = 0.0f;
 
-    /*log_ << "scoring (" << loc.x << "," << loc.y << ")" << std::endl;*/
-
     nearby_region(loc, config_.score_region_radius, [&](const hlt::Location l, const hlt::Site& site) {
 
         if (site.owner != id_) {
 
             float local_score = (float)site.production / (std::max)(1.0f, (float)site.strength);
+            local_score /= 1 + map_.getDistance(l, loc);
 
             // lets be militaristic
             if (site.owner != 0) {
@@ -269,10 +400,6 @@ float zzbot::score_region(const hlt::Location& loc) {
 
     });
 
-    // log_ << "scored (" << loc.x << "," << loc.y << ") with " /*<< local_score
-    // << " out of "*/ << score
-    //   /*  << " production: " << (int)site.production << " str: " <<
-    //   (int)site.strength */<< std::endl;
     return score;
 }
 
@@ -311,12 +438,12 @@ void zzbot::range_do(distance_t y_start, distance_t y_end, distance_t x_start, d
     }
 }
 
-std::vector<std::pair<direction_t, hlt::Site>> zzbot::get_neighbors(hlt::Location loc) {
+std::vector<std::pair<direction_t, hlt::Location>> zzbot::get_neighbors(hlt::Location loc) {
 
-    std::vector<std::pair<direction_t, hlt::Site>> neighbors;
+    std::vector<std::pair<direction_t, hlt::Location>> neighbors;
 
     for (direction_t dir : CARDINALS) {
-        neighbors.emplace_back(dir, map_.getSite(loc, dir));
+        neighbors.emplace_back(dir, map_.getLocation(loc, dir));
     }
 
     return neighbors;
