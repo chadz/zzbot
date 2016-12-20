@@ -30,7 +30,7 @@ struct zzbot_config {
     int wander_clobber_ceiling = 350;
     unsigned short max_wait_for_attack = 1;
     bool should_log = true;
-    int max_reinforce_depth = 2;
+    int max_reinforce_depth = 5;
 };
 
 class zzbot {
@@ -45,6 +45,8 @@ class zzbot {
     std::set<hlt::Location> mine_;
     std::vector<hlt::Location> enemies_;
     std::vector<std::vector<site_state>> state_;
+
+    unsigned int population_{};
 
   public:
     zzbot(zzbot_config cfg);
@@ -101,10 +103,14 @@ class zzbot {
         auto& future_state = get_state(future_loc);
         const auto& future_site = map_.getSite(future_loc);
 
-        if (should_idle(current_site) && future_site.owner == id_) return;
+        if (should_idle(current_site) && future_site.owner == id_) {
+            LOGZ << "rejecting premature reinforce from (" << loc.x << "," << loc.y << ")" << std::endl;
+            return;
+        }
 
         // reject illegal moves
         if (future_state.potential + current_site.strength > config_.wander_clobber_ceiling) {
+            LOGZ << "rejecting clobber from (" << loc.x << "," << loc.y << ")" << std::endl;
             return;
         }
 

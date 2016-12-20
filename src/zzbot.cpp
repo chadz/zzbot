@@ -35,27 +35,53 @@ void zzbot::calc_state() {
 
     mine_.clear();
     enemies_.clear();
+    population_ = 0u;
 
     state_ = std::vector<std::vector<site_state>>(map_.height, std::vector<site_state>(map_.width));
 
     range_all([&](const hlt::Location loc, const hlt::Site& site) {
 
         auto& state = get_state(loc);
+        auto neighbors = get_neighbors(loc);
 
         if (site.owner == 0) {
-            state.potential = -1 * site.strength;
-            enemies_.emplace_back(loc);
-        } else if (site.owner != id_) {
-            int potential = 0;
-            nearby_region(loc, 1, [&](const hlt::Location l, const hlt::Site& s) {
-                if (s.owner != id_ && s.owner != 0) {
-                    potential -= s.strength;
-                }
-            });
 
-            state.potential = potential;
-            enemies_.emplace_back(loc);
+            state.potential -= site.strength;
+            bool border_site = false;
+            for (const auto& neighbor : neighbors) {
+                auto s = map_.getSite(neighbor.second);
+                if (s.owner != id_ && s.owner != 0) {
+                    state.potential -= s.strength;
+                }
+
+                if (s.owner == id_) {
+                    border_site = true;
+                }
+            }
+
+            if (border_site) {
+                enemies_.emplace_back(loc);
+            }
+        } else if (site.owner != id_) {
+
+            state.potential -= site.strength;
+            bool border_site = false;
+            for (const auto& neighbor : neighbors) {
+                auto s = map_.getSite(neighbor.second);
+                if (s.owner != id_ && s.owner != 0) {
+                    state.potential -= s.strength;
+                }
+
+                if (s.owner == id_) {
+                    border_site = true;
+                }
+            }
+
+            if (border_site) {
+                enemies_.emplace_back(loc);
+            }
         } else {
+            population_++;
             state.potential = site.strength;
             mine_.emplace(loc);
         }
@@ -155,6 +181,8 @@ void zzbot::do_attack(std::vector<hlt::Location>& targets) {
 
     // this is kind of a hack/first step at controlling thrashing from reinforcing. award the biggest depth to only the
     // highest ranked targets
+
+    int cells = map_.width * map_.height;
     int depth = config_.max_reinforce_depth;
     for (const auto& target : targets) {
         do_try_reinforce(target, (std::max)(1, depth--));
@@ -165,14 +193,15 @@ void zzbot::do_attack(std::vector<hlt::Location>& targets) {
 void zzbot::do_try_reinforce(hlt::Location target, int depth) {
 
     auto& target_state = get_state(target);
+    const auto& target_site = map_.getSite(target);
 
-    if (depth == 0 || target_state.visited) {
+    if (depth <= 0 || target_state.visited) {
         return;
     }
 
-    target_state.visited = true;
-
-    const auto& target_site = map_.getSite(target);
+    if (!should_idle(target_site)) {
+        target_state.visited = true;
+    }
 
     auto supporters = get_neighbors(target, [this](hlt::Location location) {
         const auto& site = map_.getSite(location);
@@ -184,21 +213,18 @@ void zzbot::do_try_reinforce(hlt::Location target, int depth) {
         return;
     }
 
-    LOGZ << "reinforce to beat (" << target.x << "," << target.y << ") score " << get_state(target).score << " from  ("
-         << target.x << "," << target.y << ") depth " << depth << std::endl;
-
-    LOGZ << "can reinforce to beat (" << target.x << "," << target.y << ") score " << get_state(target).score
-         << " depth " << depth << std::endl;
+    LOGZ << "looking for reinforcements for  (" << target.x << "," << target.y << ") depth " << depth << std::endl;
 
     // send supporters to allied spots
     for (const auto& supporter : supporters) {
 
         auto supporter_loc = supporter.second;
 
-        LOGZ << "moving (" << supporter_loc.x << "," << supporter_loc.y << ")"
-             << "to (" << target.x << "," << target.y << ")" << std::endl;
-
         if (target_site.owner == id_) {
+
+            LOGZ << "reinforcing (" << supporter_loc.x << "," << supporter_loc.y << ")"
+                 << "to (" << target.x << "," << target.y << ")" << std::endl;
+
             assign_move(supporter_loc, {supporter_loc, supporter.first});
         }
         do_try_reinforce(supporter_loc, depth - 1);
@@ -236,6 +262,11 @@ void zzbot::do_try_attack(hlt::Location target) {
         const auto& attacker_site = map_.getSite(attacker_loc);
         const auto& target_state = get_state(target);
 
+        LOGZ << "trying to attack from (" << attacker_loc.x << "," << attacker_loc.y << ","
+             << (int)attacker_site.strength << ")"
+             << "to (" << target.x << "," << target.y << "," << (int)target_site.strength
+             << ") combined power: " << total_power << std::endl;
+
         if (target_site.owner == 0 && total_power < target_site.strength && future_power > target_site.strength) {
             LOGZ << "waiting to attack from (" << attacker_loc.x << "," << attacker_loc.y << ","
                  << (int)attacker_site.strength << ")" << std::endl;
@@ -245,11 +276,6 @@ void zzbot::do_try_attack(hlt::Location target) {
 
         if ((target_site.owner != 0 && total_power >= target_site.strength) ||
             (target_site.owner == 0 && total_power > target_site.strength)) {
-
-            LOGZ << "attacking from (" << attacker_loc.x << "," << attacker_loc.y << "," << (int)attacker_site.strength
-                 << ")"
-                 << "to (" << target.x << "," << target.y << "," << (int)target_site.strength
-                 << ") combined power: " << total_power << std::endl;
 
             assign_move(attacker_loc, {attacker_loc, attacker.first});
 
