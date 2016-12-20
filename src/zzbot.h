@@ -19,16 +19,18 @@ typedef unsigned short distance_t;
 struct site_state {
     float score{};
     int potential{};
+    bool visited = false;
 };
 
 struct zzbot_config {
     std::string name = "zzbot";
     unsigned short production_move_scalar = 5;
-    unsigned short score_region_radius = 1;
+    unsigned short score_region_radius = 10;
     float score_enemy_scalar = 1.0f;
     int wander_clobber_ceiling = 350;
     unsigned short max_wait_for_attack = 1;
     bool should_log = true;
+    int max_reinforce_depth = 2;
 };
 
 class zzbot {
@@ -42,7 +44,6 @@ class zzbot {
     std::map<hlt::Location, hlt::Move> orders_;
     std::set<hlt::Location> mine_;
     std::vector<hlt::Location> enemies_;
-    std::vector<hlt::Location> neutral_;
     std::vector<std::vector<site_state>> state_;
 
   public:
@@ -92,12 +93,15 @@ class zzbot {
 
     void assign_move(const hlt::Location& loc, const hlt::Move& move, bool erase = true) {
 
+        const auto& current_site = map_.getSite(loc);
+
+        auto& current_state = get_state(loc);
+
         auto future_loc = map_.getLocation(loc, move.dir);
         auto& future_state = get_state(future_loc);
         const auto& future_site = map_.getSite(future_loc);
 
-        auto& current_state = get_state(loc);
-        const auto& current_site = map_.getSite(loc);
+        if (should_idle(current_site) && future_site.owner == id_) return;
 
         // reject illegal moves
         if (future_state.potential + current_site.strength > config_.wander_clobber_ceiling) {
@@ -115,7 +119,7 @@ class zzbot {
     }
 
     void do_attack(std::vector<hlt::Location>& targets);
-    void do_try_reinforce(hlt::Location target);
+    void do_try_reinforce(hlt::Location target, int depth = 1);
     void do_try_attack(hlt::Location target);
     void do_wander(const hlt::Location loc);
 
