@@ -1,8 +1,8 @@
 #include "zzbot.h"
 
 #include <algorithm>
+#include <limits>
 #include <numeric>
-
 // todo: optimize decision making between wandering and waiting to attack
 // maybe a retreat if no overkill is really going to occur
 // figure out how moves are actually executed... can strength be moved from a neighbor and attack the same turn? iono!
@@ -199,9 +199,7 @@ void zzbot::do_try_reinforce(hlt::Location target, int depth) {
         return;
     }
 
-    if (!should_idle(target_site)) {
-        target_state.visited = true;
-    }
+    target_state.visited = true;
 
     auto supporters = get_neighbors(target, [this](hlt::Location location) {
         const auto& site = map_.getSite(location);
@@ -253,7 +251,7 @@ void zzbot::do_try_attack(hlt::Location target) {
         const auto& site = map_.getSite(attacker.second);
         const auto& state = get_state(attacker.second);
         total_power += site.strength;
-        future_power += state.potential;
+        future_power += state.potential * config_.max_wait_for_attack;
     }
 
     for (const auto& attacker : attackers) {
@@ -299,53 +297,28 @@ void zzbot::do_wander(const hlt::Location loc) {
         return;
     }
 
-    auto borders = distance_to_borders(loc);
+    hlt::Location best_loc = loc;
+    float best_score = (std::numeric_limits<float>::min)();
+    for (const auto& enemy : enemies_) {
+        auto distance = map_.getDistance(loc, enemy);
 
-    // both planes are taken; just move randomly SW
-    if (std::none_of(borders.cbegin(), borders.cend(),
-                     [](const optional<std::pair<hlt::Location, distance_t>>& border) { return border.has_value(); })) {
+        auto enemy_score = get_state(enemy).score / (distance * distance);
 
-        direction_t random_dir = 3 + (rand() & 1);
-        const auto& future_state = get_state(map_.getLocation(loc, random_dir));
-        assign_move(loc, {loc, random_dir}, false);
-    }
-
-    // move in most valuable direction
-    float best_score = std::numeric_limits<float>::lowest();
-    direction_t best_dir = STILL;
-
-    for (direction_t dir : CARDINALS) {
-        // this happens when we control the entire row or column
-        if (!borders[dir].has_value()) {
-            continue;
-        }
-
-        const auto& border_loc = borders[dir].value().first;
-        auto border_distance = borders[dir].value().second;
-        const auto& border_score = get_state(border_loc).score;
-        auto score = border_score / (float)(border_distance * border_distance);
-
-        // LOGZ << "attempting to wander score: " << border_score << " distance: "
-        // << (float)(border_distance * 2)
-        //     << " direction: " << (int)dir << std::endl;
-
-        if (score > best_score) {
-            best_dir = dir;
-            best_score = score;
+        if (enemy_score > best_score) {
+            best_score = enemy_score;
+            best_loc = enemy;
         }
     }
-    LOGZ << "wandering score: " << best_score << " dir: " << (int)best_dir << std::endl;
 
-    auto proposed_loc = map_.getLocation(loc, best_dir);
-    const auto& proposed_site = map_.getSite(proposed_loc);
-    const auto& proposed_state = get_state(proposed_loc);
+    auto direction = get_angle(loc, best_loc);
+    const auto& destination_site = map_.getSite(loc, direction);
+    if (destination_site.owner == id_) {
+        if (assign_move(loc, {loc, direction}, false)) {
 
-    if (proposed_site.owner == id_) {
-
-        LOGZ << "wandering from (" << loc.x << "," << loc.y << ")"
-             << "to (" << proposed_loc.x << "," << proposed_loc.y << ")" << std::endl;
-
-        assign_move(loc, {loc, best_dir}, false);
+            LOGZ << "wandering from (" << loc.x << "," << loc.y << " to (" << best_loc.x << "," << best_loc.y
+                 << ") direction " << (int)direction << std::endl;
+            return;
+        }
     }
 }
 

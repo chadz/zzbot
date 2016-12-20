@@ -86,6 +86,27 @@ class zzbot {
         return neighbors;
     }
 
+    direction_t get_angle(const hlt::Location& from, const hlt::Location& to) {
+
+        float angle = map_.getAngle(from, to) * 180.0 / 3.14159265;
+        auto roll = rand() % 90;
+
+        if (angle > 0 && angle <= 90) {
+            return roll % 90 > angle ? NORTH : EAST;
+        }
+        if (angle > 90 && angle <= 180) {
+            return 90 + roll % 90 > angle ? NORTH : WEST;
+        }
+        if (angle < 0 && angle >= -90) {
+            return roll % 90 > abs(angle) ? EAST : SOUTH;
+        }
+        if (angle < -90 && angle >= -180) {
+            return 90 + roll % 90 > abs(angle) ? SOUTH : WEST;
+        }
+
+        return EAST;
+    }
+
     site_state& get_state(const hlt::Location& loc) {
         return state_[loc.y][loc.x];
     }
@@ -93,7 +114,7 @@ class zzbot {
     bool should_idle(const hlt::Site& site);
     bool assigned_move(const hlt::Location& loc) const;
 
-    void assign_move(const hlt::Location& loc, const hlt::Move& move, bool erase = true) {
+    bool assign_move(const hlt::Location& loc, const hlt::Move& move, bool erase = true) {
 
         const auto& current_site = map_.getSite(loc);
 
@@ -105,13 +126,13 @@ class zzbot {
 
         if (should_idle(current_site) && future_site.owner == id_) {
             LOGZ << "rejecting premature reinforce from (" << loc.x << "," << loc.y << ")" << std::endl;
-            return;
+            return false;
         }
 
         // reject illegal moves
         if (future_state.potential + current_site.strength > config_.wander_clobber_ceiling) {
             LOGZ << "rejecting clobber from (" << loc.x << "," << loc.y << ")" << std::endl;
-            return;
+            return false;
         }
 
         future_state.potential += current_site.strength;
@@ -122,6 +143,7 @@ class zzbot {
         }
 
         orders_[loc] = move;
+        return true;
     }
 
     void do_attack(std::vector<hlt::Location>& targets);
