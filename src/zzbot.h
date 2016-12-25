@@ -44,7 +44,7 @@ struct zzbot_config {
     bool should_log = true;
 
     int max_reinforce_depth = 5;
-    int min_reinforce_depth = 2;
+    int min_reinforce_depth = 1;
 };
 
 class zzbot {
@@ -101,18 +101,12 @@ class zzbot {
 
         auto neighbors = get_neighbors(location);
 
-        LOGZ << "score  (" << location.x << "," << location.y << ")"
-             << ": " << state_[location.y][location.x].score << std::endl;
-
-        // for (const auto& neighbor : neighbors) {
-        //     LOGZ << "pre neighbor (" << neighbor.second.x << "," << neighbor.second.y << ")" << std::endl;
-        // }
+        if (get_state(location).score > 0) {
+            LOGZ << "score  (" << location.x << "," << location.y << ")"
+                 << ": " << get_state(location).score << std::endl;
+        }
 
         filter(neighbors, [&](std::pair<direction_t, hlt::Location> neighbor) { return fn(neighbor.second); });
-
-        // for (const auto& neighbor : neighbors) {
-        //     LOGZ << "post neighbor (" << neighbor.second.x << "," << neighbor.second.y << ")" << std::endl;
-        // }
 
         return neighbors;
     }
@@ -190,6 +184,7 @@ class zzbot {
     int do_try_reinforce(const hlt::Location& root_target, const hlt::Location& target, int depth_limit, int depth,
                          int power, int production);
     void do_try_attack(hlt::Location target);
+    void do_try_retreat(hlt::Location target);
     void do_wander(const hlt::Location loc);
     void do_old_wander(const hlt::Location loc);
 
