@@ -22,15 +22,29 @@ struct site_state {
     bool visited = false;
 };
 
+struct player_state {
+    unsigned int strength{};
+    unsigned int production{};
+    unsigned int population{};
+};
+
+struct game_state {
+    int frame{};
+    unsigned int population{};
+    std::map<int, player_state> players;
+};
+
 struct zzbot_config {
     std::string name = "zzbot";
     unsigned short production_move_scalar = 5;
     unsigned short score_region_radius = 10;
-    float score_enemy_scalar = 1.0f;
+    float score_enemy_scalar = 0.55f;
     int wander_clobber_ceiling = 350;
     unsigned short max_wait_for_attack = 1;
     bool should_log = true;
+
     int max_reinforce_depth = 5;
+    int min_reinforce_depth = 2;
 };
 
 class zzbot {
@@ -44,9 +58,10 @@ class zzbot {
     std::map<hlt::Location, hlt::Move> orders_;
     std::set<hlt::Location> mine_;
     std::vector<hlt::Location> enemies_;
+
     std::vector<std::vector<site_state>> state_;
 
-    unsigned int population_{};
+    game_state game_state_;
 
   public:
     zzbot(zzbot_config cfg);
@@ -71,17 +86,33 @@ class zzbot {
     void run();
     void behavior();
 
+    void mark_visited(const hlt::Location& loc) {
+        auto& state = get_state(loc);
+        state.visited = true;
+    }
+
+    bool has_visited(const hlt::Location& loc) {
+        const auto& state = get_state(loc);
+        return state.visited;
+    }
+
     template <class P>
     std::vector<std::pair<direction_t, hlt::Location>> get_neighbors(const hlt::Location& location, P fn) {
 
         auto neighbors = get_neighbors(location);
 
+        LOGZ << "score  (" << location.x << "," << location.y << ")"
+             << ": " << state_[location.y][location.x].score << std::endl;
+
+        // for (const auto& neighbor : neighbors) {
+        //     LOGZ << "pre neighbor (" << neighbor.second.x << "," << neighbor.second.y << ")" << std::endl;
+        // }
+
         filter(neighbors, [&](std::pair<direction_t, hlt::Location> neighbor) { return fn(neighbor.second); });
 
-        if (!neighbors.empty()) {
-            LOGZ << "score  (" << location.x << "," << location.y << ")"
-                 << ": " << state_[location.y][location.x].score << std::endl;
-        }
+        // for (const auto& neighbor : neighbors) {
+        //     LOGZ << "post neighbor (" << neighbor.second.x << "," << neighbor.second.y << ")" << std::endl;
+        // }
 
         return neighbors;
     }
@@ -97,11 +128,14 @@ class zzbot {
         if (angle > 90 && angle <= 180) {
             return 90 + roll % 90 > angle ? NORTH : WEST;
         }
-        if (angle < 0 && angle >= -90) {
-            return roll % 90 > abs(angle) ? EAST : SOUTH;
+
+        angle = abs(angle);
+
+        if (angle > 0 && angle <= 90) {
+            return roll % 90 > angle ? SOUTH : EAST;
         }
-        if (angle < -90 && angle >= -180) {
-            return 90 + roll % 90 > abs(angle) ? SOUTH : WEST;
+        if (angle > 90 && angle <= 180) {
+            return 90 + roll % 90 > angle ? SOUTH : WEST;
         }
 
         return EAST;
@@ -114,8 +148,9 @@ class zzbot {
     bool should_idle(const hlt::Site& site);
     bool assigned_move(const hlt::Location& loc) const;
 
-    bool assign_move(const hlt::Location& loc, const hlt::Move& move, bool erase = true) {
+    bool assign_move(const hlt::Move& move, bool erase = true) {
 
+        auto loc = move.loc;
         const auto& current_site = map_.getSite(loc);
 
         auto& current_state = get_state(loc);
@@ -123,6 +158,11 @@ class zzbot {
         auto future_loc = map_.getLocation(loc, move.dir);
         auto& future_state = get_state(future_loc);
         const auto& future_site = map_.getSite(future_loc);
+
+        // this occurs due to reinforce being able to traverse through 0str cells that may or may not be ours
+        if (current_site.owner != id_) {
+            return false;
+        }
 
         if (should_idle(current_site) && future_site.owner == id_) {
             LOGZ << "rejecting premature reinforce from (" << loc.x << "," << loc.y << ")" << std::endl;
@@ -147,9 +187,11 @@ class zzbot {
     }
 
     void do_attack(std::vector<hlt::Location>& targets);
-    void do_try_reinforce(hlt::Location target, int depth = 1);
+    int do_try_reinforce(const hlt::Location& root_target, const hlt::Location& target, int depth_limit, int depth,
+                         int power, int production);
     void do_try_attack(hlt::Location target);
     void do_wander(const hlt::Location loc);
+    void do_old_wander(const hlt::Location loc);
 
     std::vector<std::pair<direction_t, hlt::Location>> get_neighbors(hlt::Location loc);
 

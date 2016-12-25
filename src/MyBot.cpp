@@ -14,14 +14,18 @@ int main(int argc, char** argv) {
         int productions[] = {2, 5, 8, 10};
         float battle_factors[] = {0.75f, 1.0f, 1.25f, 1.50f};
         int radii[] = {1, 2, 4, 6};
+        int max_depths[] = {5, 5, 5, 5};
+        int min_depths[] = {1, 2, 3, 4};
 
         std::array<zzbot_config, 4> configs;
 
         for (int i = 0; i < 4; ++i) {
             configs[i].name = "zzbot_" + names[i];
-            configs[i].production_move_scalar = productions[i];
+            // configs[i].production_move_scalar = productions[i];
             // configs[i].score_enemy_scalar = battle_factors[i];
-            configs[i].score_region_radius = radii[i];
+            // configs[i].score_region_radius = radii[i];
+            configs[i].max_reinforce_depth = max_depths[i];
+            configs[i].min_reinforce_depth = min_depths[i];
         }
 
         int bot_idx = atoi(argv[1]);
