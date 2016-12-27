@@ -47,7 +47,7 @@ struct zzbot_config {
     float score_enemy_scalar = 0.55f;
     int wander_clobber_ceiling = 350;
     unsigned short max_wait_for_attack = 1;
-    bool should_log = true;
+    bool should_log = false;
 
     int max_reinforce_depth = 5;
     int min_reinforce_depth = 3;
@@ -156,39 +156,37 @@ class zzbot
 
     bool assign_move(const hlt::Move& move, bool erase = true)
     {
-        auto loc = move.loc;
-        const auto& current_site = map_.getSite(loc);
-
-        auto& current_state = get_state(loc);
-
-        auto future_loc = map_.getLocation(loc, move.dir);
-        auto& future_state = get_state(future_loc);
-        const auto& future_site = map_.getSite(future_loc);
+        auto current = get_info(move.loc);
+        auto future = get_info(map_.getLocation(move.loc, move.dir));
 
         // this occurs due to reinforce being able to traverse through 0str cells that may or may not be ours
-        if (current_site.owner != id_) {
+        if (current.site.owner != id_) {
             return false;
         }
 
-        if (should_idle(current_site) && future_site.owner == id_) {
-            LOGZ << "rejecting premature reinforce from (" << loc.x << "," << loc.y << ")" << std::endl;
+        if (should_idle(current.site) && future.site.owner == id_) {
+            LOGZ << "rejecting premature reinforce from (" << current.loc.x << "," << current.loc.y << ")" << std::endl;
             return false;
         }
 
         // reject illegal moves
-        if (future_state.potential + current_site.strength > config_.wander_clobber_ceiling) {
-            LOGZ << "rejecting clobber from (" << loc.x << "," << loc.y << ")" << std::endl;
+        if (future.state.potential + current.site.strength > config_.wander_clobber_ceiling) {
+            LOGZ << "rejecting clobber from (" << current.loc.x << "," << current.loc.y << ")" << std::endl;
             return false;
         }
 
-        future_state.potential += current_site.strength;
-        current_state.potential -= current_site.strength;
+        future.state.potential += current.site.strength;
+        current.state.potential -= current.site.strength;
 
+        if (orders_.find(current.loc) != orders_.end()) {
+            LOGZ << "rejecting repeated order from (" << current.loc.x << "," << current.loc.y << ")" << std::endl;
+            return false;
+        }
         if (erase) {
-            mine_.erase(loc);
+            mine_.erase(current.loc);
         }
 
-        orders_[loc] = move;
+        orders_[current.loc] = move;
         return true;
     }
 
