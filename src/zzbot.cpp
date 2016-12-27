@@ -9,13 +9,17 @@ zzbot::zzbot(zzbot_config cfg) : config_(cfg)
     getInit(id_, map_);
     sendInit(config_.name);
 
-    log_.open("log." + std::to_string(id_) + ".txt", std::fstream::in | std::fstream::out | std::fstream::app);
-    LOGZ << "id: " << (int)id_ << std::endl;
+    if (config_.should_log) {
+        log_.open("log." + std::to_string(id_) + ".txt", std::fstream::in | std::fstream::out | std::fstream::app);
+        LOGZ << "id: " << (int)id_ << std::endl;
+    }
 }
 
 zzbot::~zzbot()
 {
-    log_.close();
+    if (config_.should_log) {
+        log_.close();
+    }
 }
 
 void zzbot::calc_state()
@@ -28,8 +32,8 @@ void zzbot::calc_state()
     state_ = std::vector<std::vector<site_state>>(map_.height, std::vector<site_state>(map_.width));
 
     range_all([&](site_info info) {
-        auto neighbors = get_neighbors(info.loc);
 
+        auto neighbors = get_neighbors(info.loc);
         auto& player = game_state_.players[info.site.owner];
         player.population++;
         player.strength += info.site.strength;
@@ -37,7 +41,6 @@ void zzbot::calc_state()
 
         if (info.site.owner == 0) {
 
-            bool border_site = false;
             info.state.potential -= info.site.strength;
 
             auto enemies =
@@ -61,11 +64,11 @@ void zzbot::calc_state()
                 // other_state.potential -= power;
 
                 if (map_.getSite(other.second).owner == id_) {
-                    border_site = true;
+                    info.state.border = true;
                 }
             }
 
-            if (border_site) {
+            if (info.state.border) {
                 enemies_.emplace_back(info.loc);
             }
 
@@ -83,7 +86,6 @@ void zzbot::calc_state()
         } else {
 
             game_state_.population++;
-
             info.state.potential = info.site.strength;
             mine_.emplace(info.loc);
         }
@@ -103,21 +105,16 @@ void zzbot::calc_state()
 void zzbot::behavior()
 {
     calc_state();
-
-    do_attack(enemies_);
-
-    // wander with whatever wasn't assigned a move
-    for (const auto& mine : mine_) {
-        do_wander(mine);
-    }
+    do_attack();
+    do_wander();
 }
 
 void zzbot::run()
 {
     std::set<hlt::Move> moves;
-    for (int frame = 0;; ++frame) {
+    for (game_state_.frame = 0;; game_state_.frame++) {
 
-        LOGZ << "frame: " << frame << std::endl;
+        LOGZ << "frame: " << game_state_.frame << std::endl;
         for (const auto player : game_state_.players) {
             LOGZ << " player: " << player.first << " strength: " << player.second.strength
                  << " production: " << player.second.production << " population: " << player.second.population
@@ -128,7 +125,6 @@ void zzbot::run()
         orders_.clear();
 
         getFrame(map_);
-
         behavior();
 
         for (const auto& move : orders_) {
@@ -144,12 +140,12 @@ bool zzbot::assigned_move(const hlt::Location& loc) const
     return mine_.find(loc) == mine_.end();
 }
 
-void zzbot::do_attack(std::vector<hlt::Location>& targets)
+void zzbot::do_attack()
 {
     int depth = config_.max_reinforce_depth;
-    for (const auto& target : targets) {
+    for (const auto& target : enemies_) {
         do_try_retreat(target);
-        //  do_try_attack(target);
+        do_try_attack(target);
         do_try_reinforce(target, target, (std::max)(config_.min_reinforce_depth, depth--), 0, 0, 0);
     }
 }
@@ -175,15 +171,18 @@ int zzbot::do_try_reinforce(const hlt::Location& root_target, const hlt::Locatio
 
     LOGZ << "looking for reinforcements for  (" << target.x << "," << target.y << ") depth " << depth << std::endl;
 
+    // int immediate_power{};
+    // for (const auto& supporter : supporters) {
+    //     auto si = get_info(supporter.second);
+    //     immediate_power += si.site.strength;
+    //     total_power += do_try_reinforce(root_target, si.loc, depth_limit, depth + 1, next_power, next_production);
+    // }
+
     int total_power{};
-    int immediate_power{};
     for (const auto& supporter : supporters) {
-        mark_visited(target);
         auto si = get_info(supporter.second);
         auto next_power = power + si.site.strength + production;
         auto next_production = production + si.site.production;
-
-        immediate_power += si.site.strength;
         total_power += do_try_reinforce(root_target, si.loc, depth_limit, depth + 1, next_power, next_production);
     }
 
@@ -193,10 +192,14 @@ int zzbot::do_try_reinforce(const hlt::Location& root_target, const hlt::Locatio
         LOGZ << "checking reinforcing (" << si.loc.x << "," << si.loc.y << ")"
              << "to (" << target.x << "," << target.y << ")" << std::endl;
 
-        if (target_site.owner != id_ && immediate_power > target_site.strength) {
-            assign_move({si.loc, supporter.first});
+        // if (target_site.owner == 0 && immediate_power > target_site.strength) {
 
-        } else if (target_site.owner == id_) {
+        //     auto dest = map_.getLocation(si.loc, supporter.first);
+        //     LOGZ << "attacking with (" << si.loc.x << "," << si.loc.y << ")"
+        //          << "to (" << dest.x << "," << dest.y << ")" << std::endl;
+        //     assign_move({si.loc, supporter.first});
+
+        if (target_site.owner == id_) {
 
             const auto& root_site = map_.getSite(root_target);
             if (total_power > root_site.strength) {
@@ -252,8 +255,10 @@ void zzbot::do_try_attack(hlt::Location target)
              << "to (" << target.x << "," << target.y << "," << (int)target_site.strength << ","
              << target_state.potential << ") combined power: " << total_power << std::endl;
 
-        // if (target_site.owner == 0 && total_power < target_site.strength && future_power > target_site.strength) {
-        //     LOGZ << "waiting to attack from (" << attacker_loc.x << "," << attacker_loc.y << "," << future_power <<
+        // if (target_site.owner == 0 && total_power < target_site.strength && future_power > target_site.strength)
+        // {
+        //     LOGZ << "waiting to attack from (" << attacker_loc.x << "," << attacker_loc.y << "," << future_power
+        //     <<
         //     ")"
         //          << std::endl;
         //     assign_move({attacker_loc, STILL});
@@ -287,7 +292,7 @@ void zzbot::do_try_retreat(hlt::Location target)
         return;
     }
 
-    // merge all allies into single cell to reduce overkill
+    // merge all allies into the single cell to reduce overkill
     if (allies.size() > 1) {
 
         for (const auto& ally : allies) {
@@ -342,32 +347,68 @@ bool zzbot::should_idle(const hlt::Site& site)
     return (site.strength < site.production * config_.production_move_scalar);
 }
 
-void zzbot::do_wander(const hlt::Location loc)
+bool zzbot::assign_move(const hlt::Move& move, bool erase)
 {
-    if (should_idle(get_info(loc).site)) {
-        return;
+    auto current = get_info(move.loc);
+    auto future = get_info(map_.getLocation(move.loc, move.dir));
+
+    // this occurs due to reinforce being able to traverse through 0str cells that may or may not be ours
+    if (current.site.owner != id_) {
+        return false;
     }
 
-    hlt::Location best_loc = loc;
-    float best_score = (std::numeric_limits<float>::min)();
-    for (const auto& enemy : enemies_) {
-        auto distance = map_.getDistance(loc, enemy);
-        auto enemy_score = get_state(enemy).score / (distance * distance * distance);
+    if (should_idle(current.site) && future.site.owner == id_) {
+        LOGZ << "rejecting premature reinforce from (" << current.loc.x << "," << current.loc.y << ")" << std::endl;
+        return false;
+    }
 
-        if (enemy_score > best_score) {
-            best_score = enemy_score;
-            best_loc = enemy;
+    // reject illegal moves
+    if (future.state.potential + current.site.strength > config_.wander_clobber_ceiling) {
+        LOGZ << "rejecting clobber from (" << current.loc.x << "," << current.loc.y << ")" << std::endl;
+        return false;
+    }
+
+    future.state.potential += current.site.strength;
+    current.state.potential -= current.site.strength;
+
+    if (orders_.find(current.loc) != orders_.end()) {
+        LOGZ << "rejecting repeated order from (" << current.loc.x << "," << current.loc.y << ")" << std::endl;
+        return false;
+    }
+    if (erase) {
+        mine_.erase(current.loc);
+    }
+
+    orders_[current.loc] = move;
+    return true;
+}
+
+void zzbot::do_wander()
+{
+    for (const auto& loc : mine_) {
+
+        if (should_idle(map_.getSite(loc))) {
+            continue;
         }
-    }
 
-    auto direction = get_angle(loc, best_loc);
-    const auto& destination_site = map_.getSite(loc, direction);
-    if (destination_site.owner == id_) {
-        if (assign_move({loc, direction}, false)) {
+        hlt::Location best_loc = loc;
+        float best_score = (std::numeric_limits<float>::min)();
+        for (const auto& enemy : enemies_) {
+            auto distance = map_.getDistance(loc, enemy);
+            auto enemy_score = get_state(enemy).score / (distance * distance * distance);
 
-            LOGZ << "wandering from (" << loc.x << "," << loc.y << " to (" << best_loc.x << "," << best_loc.y
-                 << ") direction " << (int)direction << std::endl;
-            return;
+            if (enemy_score > best_score) {
+                best_score = enemy_score;
+                best_loc = enemy;
+            }
+        }
+
+        auto direction = get_angle(loc, best_loc);
+        const auto& destination_site = map_.getSite(loc, direction);
+        if (destination_site.owner == id_) {
+            if (assign_move({loc, direction}, false)) {
+                continue;
+            }
         }
     }
 }
@@ -400,13 +441,16 @@ float zzbot::score_region(const hlt::Location& location)
 
         } else {
 
-            auto military_value = (std::max)(1.0f, (float)(abs(info.state.potential + info.site.strength)));
-            local_score = (military_value * (float)(info.site.production * info.site.production)) / power;
+            float military_value = 1.0f;
+
+            if (info.state.border) {
+                military_value = (std::max)(1.0f, (float)(abs(info.state.potential + info.site.strength)));
+            }
+
+            local_score = (military_value * (float)(info.site.production)) / power;
+            local_score /= 1 + distance * distance * distance;
+            score += local_score;
         }
-
-        local_score /= 1 + distance * distance * distance;
-
-        score += local_score;
     });
 
     return score;
@@ -457,7 +501,7 @@ void zzbot::range_do(distance_t y_start, distance_t y_end, distance_t x_start, d
     }
 }
 
-std::vector<std::pair<direction_t, hlt::Location>> zzbot::get_neighbors(hlt::Location loc)
+std::vector<std::pair<direction_t, hlt::Location>> zzbot::get_neighbors(const hlt::Location& loc)
 {
     std::vector<std::pair<direction_t, hlt::Location>> neighbors;
 
@@ -466,4 +510,48 @@ std::vector<std::pair<direction_t, hlt::Location>> zzbot::get_neighbors(hlt::Loc
     }
 
     return neighbors;
+}
+
+std::vector<std::pair<direction_t, hlt::Location>> zzbot::get_neighbors(const hlt::Location& location,
+                                                                        std::function<bool(site_info)> fn)
+{
+    auto neighbors = get_neighbors(location);
+
+    if (get_state(location).score > 0) {
+        LOGZ << "score  (" << location.x << "," << location.y << ")"
+             << ": " << get_state(location).score << std::endl;
+    }
+
+    filter(neighbors, [&](std::pair<direction_t, hlt::Location> neighbor) { return fn(get_info(neighbor.second)); });
+
+    return neighbors;
+}
+
+// don't forget the bug in hlt::getAngle either (y needs be negated in atan2)
+direction_t zzbot::get_angle(const hlt::Location& from, const hlt::Location& to)
+{
+    float angle = map_.getAngle(from, to) * 180.0 / 3.14159265;
+    float roll = rand() % 90;
+    direction_t dir = EAST;
+
+    if (angle > 0.0f && angle <= 90.0f) {
+        dir = roll > angle ? EAST : NORTH;
+
+    } else if (angle < 0.0f && angle >= -90.0f) {
+        float a = abs(angle);
+        dir = roll > a ? EAST : SOUTH;
+
+    } else if (angle < -90.0f && angle >= -180.0f) {
+        float a = abs(angle) - 90.0f;
+        dir = roll > a ? SOUTH : WEST;
+
+    } else if (angle > 90.0f && angle <= 180.0f) {
+        float a = angle - 90.0f;
+        dir = roll > a ? NORTH : WEST;
+    }
+
+    LOGZ << "getAngle from (" << from.x << "," << from.y << ") to (" << to.x << "," << to.y << ") roll:" << roll
+         << " angle:" << angle << " direction:" << (int)dir << std::endl;
+
+    return dir;
 }

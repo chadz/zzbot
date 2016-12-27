@@ -34,7 +34,9 @@ int main(int argc, char** argv)
         zzbot bot(configs[bot_idx]);
         bot.run();
     } else {
-        zzbot bot({});
+        zzbot_config cfg;
+        cfg.name = argv[0];
+        zzbot bot(cfg);
         bot.run();
     }
 

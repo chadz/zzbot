@@ -20,6 +20,7 @@ struct site_state {
     float score{};
     int potential{};
     bool visited = false;
+    bool border = false;
 };
 
 struct player_state {
@@ -45,7 +46,7 @@ struct zzbot_config {
     unsigned short production_move_scalar = 5;
     unsigned short score_region_radius = 10;
     float score_enemy_scalar = 0.55f;
-    int wander_clobber_ceiling = 350;
+    int wander_clobber_ceiling = 375;
     unsigned short max_wait_for_attack = 1;
     bool should_log = false;
 
@@ -80,10 +81,6 @@ class zzbot
         return rdir[direction];
     }
 
-    void calc_state();
-    void run();
-    void behavior();
-
     site_state& get_state(const hlt::Location& loc)
     {
         return state_[loc.y][loc.x];
@@ -106,104 +103,34 @@ class zzbot
         return state.visited;
     }
 
-    template <class P>
-    std::vector<std::pair<direction_t, hlt::Location>> get_neighbors(const hlt::Location& location, P fn)
-    {
-        auto neighbors = get_neighbors(location);
+    void calc_state();
+    void run();
+    void behavior();
 
-        if (get_state(location).score > 0) {
-            LOGZ << "score  (" << location.x << "," << location.y << ")"
-                 << ": " << get_state(location).score << std::endl;
-        }
-
-        filter(neighbors,
-               [&](std::pair<direction_t, hlt::Location> neighbor) { return fn(get_info(neighbor.second)); });
-
-        return neighbors;
-    }
-
-    // gotta be a cleaner way to do this. don't forget the bug in hlt::getAngle either (y needs be negated in atan2)
-    direction_t get_angle(const hlt::Location& from, const hlt::Location& to)
-    {
-        float angle = map_.getAngle(from, to) * 180.0 / 3.14159265;
-        float roll = rand() % 90;
-        direction_t dir = EAST;
-
-        if (angle > 0.0f && angle <= 90.0f) {
-            dir = roll > angle ? EAST : NORTH;
-
-        } else if (angle < 0.0f && angle >= -90.0f) {
-            float a = abs(angle);
-            dir = roll > a ? EAST : SOUTH;
-
-        } else if (angle < -90.0f && angle >= -180.0f) {
-            float a = abs(angle) - 90.0f;
-            dir = roll > a ? SOUTH : WEST;
-
-        } else if (angle > 90.0f && angle <= 180.0f) {
-            float a = angle - 90.0f;
-            dir = roll > a ? NORTH : WEST;
-        }
-
-        LOGZ << "getAngle from (" << from.x << "," << from.y << ") to (" << to.x << "," << to.y << ") roll:" << roll
-             << " angle:" << angle << " direction:" << (int)dir << std::endl;
-
-        return dir;
-    }
+    direction_t get_angle(const hlt::Location& from, const hlt::Location& to);
 
     bool should_idle(const hlt::Site& site);
     bool assigned_move(const hlt::Location& loc) const;
 
-    bool assign_move(const hlt::Move& move, bool erase = true)
-    {
-        auto current = get_info(move.loc);
-        auto future = get_info(map_.getLocation(move.loc, move.dir));
+    bool assign_move(const hlt::Move& move, bool erase = true);
 
-        // this occurs due to reinforce being able to traverse through 0str cells that may or may not be ours
-        if (current.site.owner != id_) {
-            return false;
-        }
+    void do_attack();
+    void do_wander();
 
-        if (should_idle(current.site) && future.site.owner == id_) {
-            LOGZ << "rejecting premature reinforce from (" << current.loc.x << "," << current.loc.y << ")" << std::endl;
-            return false;
-        }
-
-        // reject illegal moves
-        if (future.state.potential + current.site.strength > config_.wander_clobber_ceiling) {
-            LOGZ << "rejecting clobber from (" << current.loc.x << "," << current.loc.y << ")" << std::endl;
-            return false;
-        }
-
-        future.state.potential += current.site.strength;
-        current.state.potential -= current.site.strength;
-
-        if (orders_.find(current.loc) != orders_.end()) {
-            LOGZ << "rejecting repeated order from (" << current.loc.x << "," << current.loc.y << ")" << std::endl;
-            return false;
-        }
-        if (erase) {
-            mine_.erase(current.loc);
-        }
-
-        orders_[current.loc] = move;
-        return true;
-    }
-
-    void do_attack(std::vector<hlt::Location>& targets);
     int do_try_reinforce(const hlt::Location& root_target, const hlt::Location& target, int depth_limit, int depth,
                          int power, int production);
     void do_try_attack(hlt::Location target);
     void do_try_retreat(hlt::Location target);
-    void do_wander(const hlt::Location loc);
 
-    std::vector<std::pair<direction_t, hlt::Location>> get_neighbors(hlt::Location loc);
+    std::vector<std::pair<direction_t, hlt::Location>> get_neighbors(const hlt::Location& location);
 
-    typedef std::function<void(site_info)> range_fn;
+    std::vector<std::pair<direction_t, hlt::Location>> get_neighbors(const hlt::Location& location,
+                                                                     std::function<bool(site_info)> fn);
 
     float score_region(const hlt::Location& loc);
 
+    typedef std::function<void(site_info)> range_fn;
     void nearby_region(const hlt::Location& loc, distance_t radius, range_fn fn);
     void range_all(range_fn fn);
-    void range_do(distance_t y_start, distance_t y_end, distance_t x_start, distance_t x_end, range_fn);
+    void range_do(distance_t y_start, distance_t y_end, distance_t x_start, distance_t x_end, range_fn fn);
 };
