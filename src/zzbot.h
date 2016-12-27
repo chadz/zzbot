@@ -34,6 +34,12 @@ struct game_state {
     std::map<int, player_state> players;
 };
 
+struct site_info {
+    const hlt::Location& loc;
+    const hlt::Site& site;
+    site_state& state;
+};
+
 struct zzbot_config {
     std::string name = "zzbot";
     unsigned short production_move_scalar = 5;
@@ -44,10 +50,11 @@ struct zzbot_config {
     bool should_log = true;
 
     int max_reinforce_depth = 5;
-    int min_reinforce_depth = 1;
+    int min_reinforce_depth = 3;
 };
 
-class zzbot {
+class zzbot
+{
   private:
     zzbot_config config_{};
     unsigned char id_{};
@@ -67,38 +74,41 @@ class zzbot {
     zzbot(zzbot_config cfg);
     ~zzbot();
 
-    direction_t reverse_direction(direction_t direction) {
-        switch (direction) {
-        case NORTH:
-            return SOUTH;
-        case SOUTH:
-            return NORTH;
-        case EAST:
-            return WEST;
-        case WEST:
-            return EAST;
-        default:
-            return STILL;
-        };
+    direction_t reverse_direction(direction_t direction)
+    {
+        int rdir[] = {STILL, SOUTH, WEST, NORTH, EAST};
+        return rdir[direction];
     }
 
     void calc_state();
     void run();
     void behavior();
 
-    void mark_visited(const hlt::Location& loc) {
+    site_state& get_state(const hlt::Location& loc)
+    {
+        return state_[loc.y][loc.x];
+    }
+
+    site_info get_info(const hlt::Location& location)
+    {
+        return site_info{location, map_.getSite(location), get_state(location)};
+    }
+
+    void mark_visited(const hlt::Location& loc)
+    {
         auto& state = get_state(loc);
         state.visited = true;
     }
 
-    bool has_visited(const hlt::Location& loc) {
+    bool has_visited(const hlt::Location& loc)
+    {
         const auto& state = get_state(loc);
         return state.visited;
     }
 
     template <class P>
-    std::vector<std::pair<direction_t, hlt::Location>> get_neighbors(const hlt::Location& location, P fn) {
-
+    std::vector<std::pair<direction_t, hlt::Location>> get_neighbors(const hlt::Location& location, P fn)
+    {
         auto neighbors = get_neighbors(location);
 
         if (get_state(location).score > 0) {
@@ -106,44 +116,46 @@ class zzbot {
                  << ": " << get_state(location).score << std::endl;
         }
 
-        filter(neighbors, [&](std::pair<direction_t, hlt::Location> neighbor) { return fn(neighbor.second); });
+        filter(neighbors,
+               [&](std::pair<direction_t, hlt::Location> neighbor) { return fn(get_info(neighbor.second)); });
 
         return neighbors;
     }
 
-    direction_t get_angle(const hlt::Location& from, const hlt::Location& to) {
-
+    // gotta be a cleaner way to do this. don't forget the bug in hlt::getAngle either (y needs be negated in atan2)
+    direction_t get_angle(const hlt::Location& from, const hlt::Location& to)
+    {
         float angle = map_.getAngle(from, to) * 180.0 / 3.14159265;
-        auto roll = rand() % 90;
+        float roll = rand() % 90;
+        direction_t dir = EAST;
 
-        if (angle > 0 && angle <= 90) {
-            return roll % 90 > angle ? NORTH : EAST;
+        if (angle > 0.0f && angle <= 90.0f) {
+            dir = roll > angle ? EAST : NORTH;
+
+        } else if (angle < 0.0f && angle >= -90.0f) {
+            float a = abs(angle);
+            dir = roll > a ? EAST : SOUTH;
+
+        } else if (angle < -90.0f && angle >= -180.0f) {
+            float a = abs(angle) - 90.0f;
+            dir = roll > a ? SOUTH : WEST;
+
+        } else if (angle > 90.0f && angle <= 180.0f) {
+            float a = angle - 90.0f;
+            dir = roll > a ? NORTH : WEST;
         }
-        if (angle > 90 && angle <= 180) {
-            return 90 + roll % 90 > angle ? NORTH : WEST;
-        }
 
-        angle = abs(angle);
+        LOGZ << "getAngle from (" << from.x << "," << from.y << ") to (" << to.x << "," << to.y << ") roll:" << roll
+             << " angle:" << angle << " direction:" << (int)dir << std::endl;
 
-        if (angle > 0 && angle <= 90) {
-            return roll % 90 > angle ? SOUTH : EAST;
-        }
-        if (angle > 90 && angle <= 180) {
-            return 90 + roll % 90 > angle ? SOUTH : WEST;
-        }
-
-        return EAST;
-    }
-
-    site_state& get_state(const hlt::Location& loc) {
-        return state_[loc.y][loc.x];
+        return dir;
     }
 
     bool should_idle(const hlt::Site& site);
     bool assigned_move(const hlt::Location& loc) const;
 
-    bool assign_move(const hlt::Move& move, bool erase = true) {
-
+    bool assign_move(const hlt::Move& move, bool erase = true)
+    {
         auto loc = move.loc;
         const auto& current_site = map_.getSite(loc);
 
@@ -186,17 +198,13 @@ class zzbot {
     void do_try_attack(hlt::Location target);
     void do_try_retreat(hlt::Location target);
     void do_wander(const hlt::Location loc);
-    void do_old_wander(const hlt::Location loc);
 
     std::vector<std::pair<direction_t, hlt::Location>> get_neighbors(hlt::Location loc);
 
-    typedef std::function<void(const hlt::Location, const hlt::Site&)> range_fn;
-    typedef optional<std::pair<hlt::Location, distance_t>> maybe_neighbor_t;
+    typedef std::function<void(site_info)> range_fn;
 
-    std::array<maybe_neighbor_t, 5> distance_to_borders(const hlt::Location loc);
-
-    direction_t find_nearest_border(const hlt::Location loc);
     float score_region(const hlt::Location& loc);
+
     void nearby_region(const hlt::Location& loc, distance_t radius, range_fn fn);
     void range_all(range_fn fn);
     void range_do(distance_t y_start, distance_t y_end, distance_t x_start, distance_t x_end, range_fn);

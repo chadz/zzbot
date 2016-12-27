@@ -5,3 +5,4 @@ AlwaysBreakTemplateDeclarations: true
 PointerAlignment : Left
 AllowShortFunctionsOnASingleLine: false
 AllowShortIfStatementsOnASingleLine: true
+BreakBeforeBraces: Linux

@@ -4,7 +4,8 @@
 #include "networking.hpp"
 #include <array>
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
     srand(time(NULL));
     std::cout.sync_with_stdio(0);
 
