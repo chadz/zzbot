@@ -132,8 +132,12 @@ void zzbot::calc_state()
 
 void zzbot::behavior()
 {
+    float avg = std::accumulate(enemies_.begin(), enemies_.end(), 0.0f,
+                                [this](float score, hlt::Location loc) { return score += get_state(loc).score; }) /
+                enemies_.size();
+
     calc_state();
-    do_attack();
+    do_attack(avg);
     do_wander();
 }
 
@@ -168,10 +172,11 @@ bool zzbot::assigned_move(const hlt::Location& loc) const
     return mine_.find(loc) == mine_.end();
 }
 
-void zzbot::do_attack()
+void zzbot::do_attack(float avg)
 {
-    int depth = config_.max_reinforce_depth;
     for (const auto& target : enemies_) {
+        int depth = (std::max)(config_.min_reinforce_depth,
+                               (std::min)(config_.max_reinforce_depth, (int)(avg / get_state(target).score)));
         do_try_tactics(target);
         do_try_attack(target);
         do_try_reinforce(target, target, (std::max)(config_.min_reinforce_depth, depth--), 0, 0, 0);
@@ -307,7 +312,6 @@ void zzbot::do_try_attack(hlt::Location target)
 
 void zzbot::do_try_tactics(hlt::Location target)
 {
-
     auto ti = get_info(target);
     LOGZ << "special tactics at (" << target.x << "," << target.y << ")" << std::endl;
 
@@ -329,9 +333,8 @@ void zzbot::do_try_tactics(hlt::Location target)
                                           return power + map_.getSite(enemy.second).strength;
                                       });
 
-
     // coming up heads on to a enemy, let them sacrifice the strength to take the dividing territory
-    if (neutrals.size() == 2) {
+    if (neutrals.size() == 2 && ti.site.strength > 0) {
 
         for (const auto& ally : allies) {
 
@@ -361,71 +364,31 @@ void zzbot::do_try_tactics(hlt::Location target)
                  << destination.y << ")" << std::endl;
             assign_move({ally.second, ally.first});
         }
-		return;
+        return;
     }
 
-	// ensure nobody moves into cells that are attacking
-    if (enemies.size() == 1 && allies.size() == 1) {
-        auto west = get_info(map_.getLocation(ti.loc, WEST));
-        auto east = get_info(map_.getLocation(ti.loc, EAST));
-        auto north = get_info(map_.getLocation(ti.loc, NORTH));
-        auto south = get_info(map_.getLocation(ti.loc, SOUTH));
+    // ensure nobody else moves into cells that are attacking
+    auto check_opposites = [this](const hlt::Location& loc, direction_t dir) {
 
-        if (west.site.owner == id_) {
-			LOGZ << "poison west (" << west.loc.x << "," << west.loc.y << ")" << std::endl;
-            west.state.potential = 1337;
-        } else if (east.site.owner == id_) {
-			LOGZ << "poison west (" << east.loc.x << "," << east.loc.y << ")" << std::endl;
-            east.state.potential = 1337;
-        } else if (north.site.owner == id_) {
-			LOGZ << "poison west (" << north.loc.x << "," << north.loc.y << ")" << std::endl;
-            north.state.potential = 1337;
-        } else if (south.site.owner == id_) {
-			LOGZ << "poison west (" << south.loc.x << "," << south.loc.y << ")" << std::endl;
-            south.state.potential = 1337;
+        auto a = get_info(map_.getLocation(loc, dir));
+        auto b = get_info(map_.getLocation(loc, reverse_direction(dir)));
+
+        if (a.site.owner != b.site.owner && a.site.owner != 0 && b.site.owner != 0) {
+            if (a.site.owner == id_) {
+                a.state.potential = 1337;
+            } else {
+                b.state.potential = 1337;
+            }
         }
+    };
+
+    for (auto dir : CARDINALS) {
+        check_opposites(ti.loc, dir);
     }
-
-    // std::sort(allies.begin(), allies.end(), [this](const std::pair<direction_t, hlt::Location>& a,
-    //                                                const std::pair<direction_t, hlt::Location>& b) {
-    //     return map_.getSite(a.second).strength < map_.getSite(b.second).strength;
-    // });
-
-    // // leave our biggest to attack or chill, but we must retreat with the rest
-    // auto biggest_ally = allies.back();
-    // allies.pop_back();
-
-    // // poison this tile so nobody moves into it
-    // LOGZ << "poisoning wake (" << biggest_ally.second.x << "," << biggest_ally.second.y << ")" << std::endl;
-    // get_state(biggest_ally.second).potential = 1337;
-
-    // for (const auto& ally : allies) {
-
-    //     LOGZ << "retreat ally (" << ally.second.x << "," << ally.second.y << ")" << std::endl;
-    //     auto& state = get_state(ally.second);
-
-    //     auto retreat_spots = get_neighbors(ally.second, [&](hlt::Location location) {
-    //         const auto& retreat_site = map_.getSite(location);
-    //         auto& retreat_state = get_state(ally.second);
-    //         return !(retreat_site.owner == id_);
-    //     });
-
-    //     for (const auto& retreat_attempt : retreat_spots) {
-    //         if (assign_move({ally.second, retreat_attempt.first})) {
-    //             LOGZ << "retreating (" << ally.second.x << "," << ally.second.y << ") to ("
-    //                  << map_.getLocation(ally.second, retreat_attempt.first).x << ","
-    //                  << map_.getLocation(ally.second, retreat_attempt.first).y << ")" << std::endl;
-    //             continue;
-    //         }
-    //     }
-    //     // poison this tile so nobody moves into it
-    //     LOGZ << "poisoning (" << ally.second.x << "," << ally.second.y << ")" << std::endl;
-    //     state.potential = 1337;
-    // }
 }
 
 // xxx: i think this might be better dynamic based on map size
-bool zzbot::should_idle(const hlt::Site& site)
+bool zzbot::should_idle(const hlt::Site& site) const
 {
     return (site.strength < site.production * config_.production_move_scalar);
 }

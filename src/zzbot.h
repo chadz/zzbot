@@ -48,7 +48,7 @@ struct zzbot_config {
     float score_enemy_scalar = 0.55f;
     int wander_clobber_ceiling = 375;
     unsigned short max_wait_for_attack = 1;
-    bool should_log = true;
+    bool should_log = false;
 
     int max_reinforce_depth = 5;
     int min_reinforce_depth = 3;
@@ -88,12 +88,12 @@ class zzbot
     void calc_state();
     float score_region(const hlt::Location& loc);
     void behavior();
-    bool should_idle(const hlt::Site& site);
+    bool should_idle(const hlt::Site& site) const;
 
     bool assigned_move(const hlt::Location& loc) const;
     bool assign_move(const hlt::Move& move, bool erase = true);
 
-    void do_attack();
+    void do_attack(float avg_score);
     void do_wander();
 
     int do_try_reinforce(const hlt::Location& root_target, const hlt::Location& target, int depth_limit, int depth,
