@@ -48,7 +48,7 @@ struct zzbot_config {
     float score_enemy_scalar = 0.55f;
     int wander_clobber_ceiling = 375;
     unsigned short max_wait_for_attack = 1;
-    bool should_log = false;
+    bool should_log = true;
 
     int max_reinforce_depth = 5;
     int min_reinforce_depth = 3;
@@ -68,50 +68,29 @@ class zzbot
     std::vector<hlt::Location> enemies_;
 
     std::vector<std::vector<site_state>> state_;
-
     game_state game_state_;
 
   public:
+    void run();
     zzbot(zzbot_config cfg);
     ~zzbot();
 
-    direction_t reverse_direction(direction_t direction)
-    {
-        int rdir[] = {STILL, SOUTH, WEST, NORTH, EAST};
-        return rdir[direction];
-    }
+  private:
+    direction_t reverse_direction(direction_t direction);
 
-    site_state& get_state(const hlt::Location& loc)
-    {
-        return state_[loc.y][loc.x];
-    }
-
-    site_info get_info(const hlt::Location& location)
-    {
-        return site_info{location, map_.getSite(location), get_state(location)};
-    }
-
-    void mark_visited(const hlt::Location& loc)
-    {
-        auto& state = get_state(loc);
-        state.visited = true;
-    }
-
-    bool has_visited(const hlt::Location& loc)
-    {
-        const auto& state = get_state(loc);
-        return state.visited;
-    }
-
-    void calc_state();
-    void run();
-    void behavior();
-
+    site_state& get_state(const hlt::Location& loc);
+    site_info get_info(const hlt::Location& location);
     direction_t get_angle(const hlt::Location& from, const hlt::Location& to);
 
-    bool should_idle(const hlt::Site& site);
-    bool assigned_move(const hlt::Location& loc) const;
+    void mark_visited(const hlt::Location& loc);
+    bool has_visited(const hlt::Location& loc);
 
+    void calc_state();
+    float score_region(const hlt::Location& loc);
+    void behavior();
+    bool should_idle(const hlt::Site& site);
+
+    bool assigned_move(const hlt::Location& loc) const;
     bool assign_move(const hlt::Move& move, bool erase = true);
 
     void do_attack();
@@ -120,16 +99,14 @@ class zzbot
     int do_try_reinforce(const hlt::Location& root_target, const hlt::Location& target, int depth_limit, int depth,
                          int power, int production);
     void do_try_attack(hlt::Location target);
-    void do_try_retreat(hlt::Location target);
+    void do_try_tactics(hlt::Location target);
 
     std::vector<std::pair<direction_t, hlt::Location>> get_neighbors(const hlt::Location& location);
-
     std::vector<std::pair<direction_t, hlt::Location>> get_neighbors(const hlt::Location& location,
                                                                      std::function<bool(site_info)> fn);
 
-    float score_region(const hlt::Location& loc);
-
     typedef std::function<void(site_info)> range_fn;
+
     void nearby_region(const hlt::Location& loc, distance_t radius, range_fn fn);
     void range_all(range_fn fn);
     void range_do(distance_t y_start, distance_t y_end, distance_t x_start, distance_t x_end, range_fn fn);

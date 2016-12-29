@@ -6,7 +6,7 @@
 
 int main(int argc, char** argv)
 {
-    srand(time(NULL));
+    srand((unsigned int)time(NULL));
     std::cout.sync_with_stdio(0);
 
     if (argc == 2) {

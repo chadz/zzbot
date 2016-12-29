@@ -36,7 +36,8 @@ static std::string serializeMoveSet(const std::set<hlt::Move> &moves) {
     return oss.str();
 }
 
-static void deserializeMapSize(const std::string &inputString) {
+static void deserializeMapSize(const std::string& inputString)
+{
     std::stringstream iss(inputString);
     iss >> width >> height;
 }
@@ -49,7 +50,7 @@ static void deserializeProductions(const std::string &inputString) {
         a->resize(width);
         for (auto b = a->begin(); b != a->end(); b++) {
             iss >> temp;
-            *b = temp;
+            *b = (unsigned char)temp;
         }
     }
 }
@@ -71,7 +72,7 @@ static hlt::GameMap deserializeMap(const std::string &inputString) {
     unsigned short counter = 0, owner = 0;
     while (y != map.height) {
         for (iss >> counter >> owner; counter; counter--) {
-            map.contents[y][x].owner = owner;
+            map.contents[y][x].owner = (unsigned char)owner;
             x++;
             if (x == map.width) {
                 x = 0;
@@ -84,7 +85,7 @@ static hlt::GameMap deserializeMap(const std::string &inputString) {
         for (int b = 0; b < map.contents[a].size(); b++) {
             short strengthShort;
             iss >> strengthShort;
-            map.contents[a][b].strength = strengthShort;
+            map.contents[a][b].strength = (unsigned char)strengthShort;
         }
     }
 
