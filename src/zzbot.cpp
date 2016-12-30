@@ -69,7 +69,7 @@ void zzbot::calc_state()
 
         if (info.site.owner == 0) {
 
-            info.state.potential -= info.site.strength;
+            info.state.potential -= info.site.strength + info.site.production;
 
             auto enemies =
                 get_neighbors(info.loc, [this](site_info ni) { return !(ni.site.owner != id_ && ni.site.owner != 0); });
@@ -132,11 +132,12 @@ void zzbot::calc_state()
 
 void zzbot::behavior()
 {
+    calc_state();
+
     float avg = std::accumulate(enemies_.begin(), enemies_.end(), 0.0f,
                                 [this](float score, hlt::Location loc) { return score += get_state(loc).score; }) /
                 enemies_.size();
 
-    calc_state();
     do_attack(avg);
     do_wander();
 }
@@ -176,7 +177,10 @@ void zzbot::do_attack(float avg)
 {
     for (const auto& target : enemies_) {
         int depth = (std::max)(config_.min_reinforce_depth,
-                               (std::min)(config_.max_reinforce_depth, (int)(avg / get_state(target).score)));
+                               (std::min)(config_.max_reinforce_depth,
+                                          2 * (config_.min_reinforce_depth + (int)(avg / get_state(target).score))));
+
+        LOGZ << "depth: " << depth << " avg: " << avg << std::endl;
         do_try_tactics(target);
         do_try_attack(target);
         do_try_reinforce(target, target, (std::max)(config_.min_reinforce_depth, depth--), 0, 0, 0);
@@ -202,7 +206,8 @@ int zzbot::do_try_reinforce(const hlt::Location& root_target, const hlt::Locatio
         return power;
     }
 
-    LOGZ << "looking for reinforcements for  (" << target.x << "," << target.y << ") depth " << depth << std::endl;
+    LOGZ << "looking for reinforcements for  (" << target.x << "," << target.y << ") depth " << depth
+         << " power: " << power << std::endl;
 
     // int immediate_power{};
     // for (const auto& supporter : supporters) {
@@ -335,7 +340,6 @@ void zzbot::do_try_tactics(hlt::Location target)
 
     // coming up heads on to a enemy, let them sacrifice the strength to take the dividing territory
     if (neutrals.size() == 2 && ti.site.strength > 0) {
-
         for (const auto& ally : allies) {
 
             if (enemy_power > ti.site.strength) {
@@ -357,7 +361,6 @@ void zzbot::do_try_tactics(hlt::Location target)
 
     // merge all allies into the single cell to reduce overkill
     if (allies.size() > 1 && ti.site.strength == 0) {
-
         for (const auto& ally : allies) {
             auto destination = map_.getLocation(ally.second, ally.first);
             LOGZ << "merging (" << ally.second.x << "," << ally.second.y << ") into (" << destination.x << ","
@@ -368,8 +371,7 @@ void zzbot::do_try_tactics(hlt::Location target)
     }
 
     // ensure nobody else moves into cells that are attacking
-    auto check_opposites = [this](const hlt::Location& loc, direction_t dir) {
-
+    auto poison_cell = [this](const hlt::Location& loc, direction_t dir) {
         auto a = get_info(map_.getLocation(loc, dir));
         auto b = get_info(map_.getLocation(loc, reverse_direction(dir)));
 
@@ -382,9 +384,8 @@ void zzbot::do_try_tactics(hlt::Location target)
         }
     };
 
-    for (auto dir : CARDINALS) {
-        check_opposites(ti.loc, dir);
-    }
+    poison_cell(ti.loc, NORTH);
+    poison_cell(ti.loc, WEST);
 }
 
 // xxx: i think this might be better dynamic based on map size
@@ -489,11 +490,13 @@ float zzbot::score_region(const hlt::Location& location)
 
             float military_value = 1.0f;
 
-            if (info.state.border) {
-                military_value = (std::max)(1.0f, (float)(abs(info.state.potential + info.site.strength)));
+            if (info.site.strength == 0) {
+                military_value = (std::max)(1.0f, (float)(abs(info.state.potential)));
             }
 
+            // optimize for strength damage
             local_score = (military_value * (float)(info.site.production)) / power;
+
             local_score /= 1 + distance * distance * distance;
             score += local_score;
         }

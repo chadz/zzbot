@@ -45,13 +45,13 @@ struct zzbot_config {
     std::string name = "zzbot";
     unsigned short production_move_scalar = 5;
     unsigned short score_region_radius = 10;
-    float score_enemy_scalar = 0.55f;
-    int wander_clobber_ceiling = 375;
+    float score_enemy_scalar = 2.0f;
+    int wander_clobber_ceiling = 350;
     unsigned short max_wait_for_attack = 1;
-    bool should_log = false;
+    bool should_log = true;
 
-    int max_reinforce_depth = 5;
-    int min_reinforce_depth = 3;
+    int max_reinforce_depth = 10;
+    int min_reinforce_depth = 1;
 };
 
 class zzbot
