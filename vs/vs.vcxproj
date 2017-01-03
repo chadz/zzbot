@@ -122,7 +122,6 @@
     <ClCompile Include="..\src\zzbot.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\src\doodads.h" />
     <ClInclude Include="..\src\hlt.hpp" />
     <ClInclude Include="..\src\networking.hpp" />
     <ClInclude Include="..\src\zzbot.h" />
