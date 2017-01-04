@@ -48,16 +48,17 @@ struct site_info {
 };
 
 struct zzbot_config {
+
     std::string name = "zzbot";
+
     unsigned short production_move_scalar = 5;
     unsigned short score_region_radius = 10;
-    float score_enemy_scalar = 2.0f;
-    int wander_clobber_ceiling = 300;
+    int wander_clobber_ceiling = 275;
     unsigned short max_wait_for_attack = 4;
-    bool should_log = true;
+    bool should_log = false;
 
+    float score_enemy_scalar = 2.0f;
     int bonus_turns = 20;
-
     int max_reinforce_depth = 6;
     int min_reinforce_depth = 1;
 };
@@ -85,6 +86,22 @@ class zzbot
     ~zzbot();
 
   private:
+    template <class P>
+    void traverse(const hlt::Location& location, P fn)
+    {
+        auto info = get_info(location);
+
+        if (info.state.visited || info.state.border) return;
+
+        info.state.visited = true;
+
+        auto neighbors = get_neighbors(location, [&](site_info si) { return si.site.owner == id_; });
+
+        for (const auto& neighbor : neighbors) {
+            traverse(neighbor.second, fn);
+            fn(neighbor.second);
+        }
+    }
     direction_t get_direction(const hlt::Location& from, const hlt::Location& to, bool wait = true);
 
     std::list<hlt::Location> get_path(const hlt::Location& from, const hlt::Location& to);
@@ -115,6 +132,7 @@ class zzbot
     }
 
     void do_attack(float avg_score);
+    void do_try_wander(const hlt::Location& location);
     void do_wander();
 
     void do_try_expand(hlt::Location target);

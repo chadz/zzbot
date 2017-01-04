@@ -47,7 +47,8 @@ direction_t zzbot::get_direction(const hlt::Location& from, const hlt::Location&
     auto next = path.front();
 
     const auto& to_site = map_.getSite(to);
-    if (to_site.owner != id_ && wait && power <= to_site.strength) {
+    bool valid_owner = to_site.owner != id_ || (to_site.owner == 0 && to_site.strength == 0);
+    if (valid_owner && wait && power <= to_site.strength) {
         return STILL;
     }
 
@@ -87,7 +88,8 @@ std::list<hlt::Location> zzbot::get_path(const hlt::Location& from, const hlt::L
 
         auto neighbors = get_neighbors(current, [&](site_info ni) {
             return ni.loc == to ||
-                   !ni.state.poisoned && ni.state.potential < config_.wander_clobber_ceiling &&
+                   !ni.state.poisoned &&
+                       (map_.getSite(current).strength + ni.state.potential) < config_.wander_clobber_ceiling &&
                        (ni.site.owner == id_ || ni.site.strength == 0);
         });
 
@@ -241,7 +243,7 @@ void zzbot::calc_state()
     });
 
     // amplify the top 20%
-    for (int i = 0; i < (std::max)(1, (int)enemies_.size() / 6); ++i) {
+    for (int i = 0; i < (std::max)(1, (int)enemies_.size() / 4); ++i) {
         LOGZ << "amplyifing (" << enemies_[i].x << "," << enemies_[i].y << ")" << std::endl;
         get_state(enemies_[i]).score *= 4;
     }
@@ -356,6 +358,8 @@ void zzbot::do_try_expand(hlt::Location target)
 
         if (total_power > target_site.strength) {
 
+            LOGZ << "attack from (" << attacker_loc.x << "," << attacker_loc.y << "," << (int)attacker_site.strength
+                 << ")" << std::endl;
             assign_move({attacker_loc, attacker.first}, false);
 
             // // abort once we commited a single guy to a zero str node
@@ -363,6 +367,9 @@ void zzbot::do_try_expand(hlt::Location target)
             //     break;
             // }
         } else {
+            LOGZ << "waiting to attack at (" << attacker_loc.x << "," << attacker_loc.y << ","
+                 << (int)attacker_site.strength << ")" << std::endl;
+
             assign_move({attacker_loc, STILL}, false);
         }
     }
@@ -396,7 +403,8 @@ void zzbot::do_try_tactics(hlt::Location target)
                                        });
 
     // coming up heads on to a enemy, let them sacrifice the strength to take the dividing territory
-    if (neutrals.size() == 2 && ti.site.strength > 0 /*&& are_facing(enemies.front().second, allies.front().second)*/) {
+    if (neutrals.size() == 2 && ti.site.strength > 0 &&
+        false /*&& are_facing(enemies.front().second, allies.front().second)*/) {
         for (const auto& ally : allies) {
 
             if (enemy_power > ti.site.strength) {
@@ -408,6 +416,8 @@ void zzbot::do_try_tactics(hlt::Location target)
                      << destination.x << "," << destination.y << ")" << std::endl;
                 force_move({ally.second, reverse_direction(ally.first)});
             } else {
+
+                LOGZ << "waiting to surprise at (" << ally.second.x << "," << ally.second.y << ")" << std::endl;
                 force_move({ally.second, STILL});
             }
         }
@@ -506,41 +516,43 @@ bool zzbot::assign_move(const hlt::Move& move, bool force)
     return true;
 }
 
-void zzbot::do_wander()
+void zzbot::do_try_wander(const hlt::Location& loc)
 {
-    for (const auto& loc : mine_) {
+    if (should_idle(map_.getSite(loc))) {
+        return;
+    }
 
-        if (should_idle(map_.getSite(loc))) {
-            continue;
-        }
+    hlt::Location best_loc = loc;
+    float best_score = (std::numeric_limits<float>::min)();
+    float best_distance = 0.0f;
+    for (const auto& enemy : enemies_) {
+        auto distance = 1 + map_.getDistance(loc, enemy);
 
-        hlt::Location best_loc = loc;
-        float best_score = (std::numeric_limits<float>::min)();
-        float best_distance = 0.0f;
-        for (const auto& enemy : enemies_) {
-            auto distance = map_.getDistance(loc, enemy);
+        if (distance > (std::max)(map_.width, map_.height) / 3) continue;
 
-            if (distance > (std::max)(map_.width, map_.height) / 3) continue;
+        auto enemy_score = get_state(enemy).score / distance;
 
-            auto enemy_score = get_state(enemy).score / distance;
-
-            if (enemy_score > best_score) {
-                best_score = enemy_score;
-                best_loc = enemy;
-                best_distance = distance;
-            }
-        }
-
-        LOGZ << "wandering from (" << loc.x << "," << loc.y << ") to (" << best_loc.x << "," << best_loc.y << ")"
-             << " best score: " << best_score << " distance:" << best_distance << std::endl;
-
-        auto direction = get_direction(loc, best_loc);
-        auto site = map_.getSite(loc, direction);
-
-        if (site.owner == id_) {
-            assign_move({loc, direction}, false);
+        if (enemy_score > best_score) {
+            best_score = enemy_score;
+            best_loc = enemy;
+            best_distance = distance;
         }
     }
+
+    LOGZ << "wandering from (" << loc.x << "," << loc.y << ") to (" << best_loc.x << "," << best_loc.y << ")"
+         << " best score: " << best_score << " distance:" << best_distance << std::endl;
+
+    auto direction = get_direction(loc, best_loc);
+    auto site = map_.getSite(loc, direction);
+
+    if (site.owner == id_) {
+        assign_move({loc, direction}, false);
+    }
+}
+void zzbot::do_wander()
+{
+    // issue wander orders from the outside-in
+    traverse((*mine_.begin()), [this](const hlt::Location& location) { return do_try_wander(location); });
 }
 
 float zzbot::score_region(const hlt::Location& location)
